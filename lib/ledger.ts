@@ -1,0 +1,211 @@
+import { createClient } from "@supabase/supabase-js";
+
+export function getSupabase() {
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/rest\/v1\/?$/, "");
+  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  return createClient(rawUrl, key, { auth: { persistSession: false } });
+}
+
+export async function getShop(mcpKey?: string | null) {
+  const sb = getSupabase();
+  if (mcpKey) {
+    const { data } = await sb.from("shops").select("*").eq("mcp_key", mcpKey).maybeSingle();
+    if (data) return data;
+  }
+  const { data: firstShop } = await sb.from("shops").select("*").limit(1).maybeSingle();
+  if (firstShop) return firstShop;
+
+  const { data: created } = await sb
+    .from("shops")
+    .insert({ name: "MCP Server", mcp_key: "ravi123" })
+    .select("*")
+    .single();
+  return created;
+}
+
+export async function getOrCreateParty(shopId: string, name: string, defaultType: "vendor" | "customer") {
+  const sb = getSupabase();
+  const cleanName = name.trim();
+  const { data: existing } = await sb
+    .from("parties")
+    .select("*")
+    .eq("shop_id", shopId)
+    .ilike("name", cleanName)
+    .maybeSingle();
+
+  if (existing) return existing;
+
+  const { data: created, error } = await sb
+    .from("parties")
+    .insert({ shop_id: shopId, name: cleanName, type: defaultType })
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return created;
+}
+
+export async function getOrCreateItem(shopId: string, name: string, unit = "m") {
+  const sb = getSupabase();
+  const cleanName = name.trim().toLowerCase();
+  const { data: existing } = await sb
+    .from("items")
+    .select("*")
+    .eq("shop_id", shopId)
+    .ilike("name", cleanName)
+    .maybeSingle();
+
+  if (existing) return existing;
+
+  const { data: created, error } = await sb
+    .from("items")
+    .insert({ shop_id: shopId, name: cleanName, unit: unit || "m" })
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return created;
+}
+
+export async function computeLedgerState(shopId: string) {
+  const sb = getSupabase();
+  const [
+    { data: parties = [] },
+    { data: items = [] },
+    { data: entries = [] },
+    { data: lines = [] },
+  ] = await Promise.all([
+    sb.from("parties").select("*").eq("shop_id", shopId).order("name"),
+    sb.from("items").select("*").eq("shop_id", shopId).order("name"),
+    sb.from("entries").select("*").eq("shop_id", shopId).order("date", { ascending: true }),
+    sb.from("entry_lines").select("*"),
+  ]);
+
+  const partyMap = new Map((parties || []).map((p: any) => [p.id, p]));
+  const itemMap = new Map((items || []).map((i: any) => [i.id, i]));
+  const linesByEntry = new Map<string, any[]>();
+  for (const l of lines || []) {
+    const arr = linesByEntry.get(l.entry_id) || [];
+    arr.push({ ...l, item: itemMap.get(l.item_id) || null });
+    linesByEntry.set(l.entry_id, arr);
+  }
+
+  // 1. Compute Stock & Weighted-Average Cost from confirmed purchases
+  const stockMap = new Map<
+    string,
+    { item_id: string; name: string; unit: string; purchased_qty: number; purchase_cost: number; sold_qty: number; avg_cost: number; stock_qty: number }
+  >();
+
+  for (const item of items || []) {
+    stockMap.set(item.id, {
+      item_id: item.id,
+      name: item.name,
+      unit: item.unit || "m",
+      purchased_qty: 0,
+      purchase_cost: 0,
+      sold_qty: 0,
+      avg_cost: 0,
+      stock_qty: 0,
+    });
+  }
+
+  const confirmedEntries = (entries || []).filter((e: any) => e.status === "confirmed");
+
+  for (const entry of confirmedEntries) {
+    const eLines = linesByEntry.get(entry.id) || [];
+    if (entry.type === "purchase") {
+      for (const l of eLines) {
+        const st = stockMap.get(l.item_id);
+        if (st) {
+          const qty = Number(l.qty) || 0;
+          const rate = Number(l.rate) || 0;
+          st.purchased_qty += qty;
+          st.purchase_cost += qty * rate;
+        }
+      }
+    } else if (entry.type === "sale") {
+      for (const l of eLines) {
+        const st = stockMap.get(l.item_id);
+        if (st) {
+          st.sold_qty += Number(l.qty) || 0;
+        }
+      }
+    }
+  }
+
+  for (const st of stockMap.values()) {
+    st.avg_cost = st.purchased_qty > 0 ? Number((st.purchase_cost / st.purchased_qty).toFixed(2)) : 0;
+    st.stock_qty = Number((st.purchased_qty - st.sold_qty).toFixed(2));
+  }
+
+  // 2. Enrich all entries with computed totals, cost, profit, and party info
+  const enrichedEntries = (entries || []).map((entry: any) => {
+    const eLines = linesByEntry.get(entry.id) || [];
+    const firstLine = eLines[0] || null;
+    const qty = firstLine ? Number(firstLine.qty) : 0;
+    const rate = firstLine ? Number(firstLine.rate) : 0;
+    const lineTotal = eLines.reduce((acc: number, l: any) => acc + Number(l.qty) * Number(l.rate), 0);
+    const paidAmount = Number(entry.paid_amount) || 0;
+    const totalAmount = entry.type === "payment" ? paidAmount : Number(lineTotal.toFixed(2));
+
+    let cost = 0;
+    let profit = 0;
+    if (entry.type === "sale" && firstLine) {
+      const st = stockMap.get(firstLine.item_id);
+      const unitCost = st ? st.avg_cost : 0;
+      cost = Number((qty * unitCost).toFixed(2));
+      profit = Number((totalAmount - cost).toFixed(2));
+    }
+
+    const balanceChange =
+      entry.type === "payment"
+        ? -paidAmount
+        : Number((totalAmount - paidAmount).toFixed(2));
+
+    return {
+      ...entry,
+      party: partyMap.get(entry.party_id) || null,
+      item: firstLine?.item || null,
+      line_id: firstLine?.id || null,
+      qty,
+      rate,
+      total_amount: totalAmount,
+      paid_amount: paidAmount,
+      cost,
+      profit,
+      unpaid_amount: entry.type === "payment" ? 0 : Number((totalAmount - paidAmount).toFixed(2)),
+      balance_change: balanceChange,
+    };
+  });
+
+  // 3. Compute Party Balances from confirmed entries
+  const partyBalances = (parties || []).map((party: any) => {
+    const pEntries = enrichedEntries.filter(
+      (e: any) => e.party_id === party.id && e.status === "confirmed"
+    );
+    let totalBilled = 0;
+    let totalPaid = 0;
+    for (const e of pEntries) {
+      if (e.type === "purchase" || e.type === "sale") {
+        totalBilled += e.total_amount;
+        totalPaid += e.paid_amount;
+      } else if (e.type === "payment") {
+        totalPaid += e.paid_amount;
+      }
+    }
+    const balance = Number((totalBilled - totalPaid).toFixed(2));
+    return {
+      ...party,
+      total_billed: Number(totalBilled.toFixed(2)),
+      total_paid: Number(totalPaid.toFixed(2)),
+      balance,
+      entries: pEntries,
+    };
+  });
+
+  return {
+    stock: Array.from(stockMap.values()),
+    parties: partyBalances,
+    entries: enrichedEntries.slice().reverse(),
+    drafts: enrichedEntries.filter((e: any) => e.status === "draft").reverse(),
+    confirmed: enrichedEntries.filter((e: any) => e.status === "confirmed").reverse(),
+  };
+}
