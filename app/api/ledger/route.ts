@@ -66,16 +66,7 @@ export async function POST(req: NextRequest) {
     const shop = await getShop(body.key);
 
     if (body.action === "update_or_confirm") {
-      const {
-        entry_id,
-        qty,
-        rate,
-        paid_amount,
-        bill_no,
-        due_days,
-        payment_method,
-        confirm,
-      } = body;
+      const { entry_id, paid_amount, bill_no, due_days, payment_method, confirm } = body;
       const updates: any = {};
       if (paid_amount !== undefined) updates.paid_amount = Number(paid_amount);
       if (bill_no !== undefined) updates.bill_no = bill_no;
@@ -89,13 +80,6 @@ export async function POST(req: NextRequest) {
 
       if (Object.keys(updates).length > 0) {
         await sb.from("entries").update(updates).eq("id", entry_id);
-      }
-
-      if (qty !== undefined || rate !== undefined) {
-        const lineUpdates: any = {};
-        if (qty !== undefined) lineUpdates.qty = Number(qty);
-        if (rate !== undefined) lineUpdates.rate = Number(rate);
-        await sb.from("entry_lines").update(lineUpdates).eq("entry_id", entry_id);
       }
 
       const state = await computeLedgerState(shop.id);
@@ -135,7 +119,7 @@ export async function POST(req: NextRequest) {
       const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
       const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
-      // 1. Purchase: Surat Silk Mills (50m red velvet @ ₹500/m = ₹25,000, paid full)
+      // 1. Purchase: Surat Silk Mills (50m red velvet @ ₹500/m = ₹25,000)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -157,7 +141,7 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 2. Purchase: Shah Textiles #1 (200m white cotton @ ₹310/m = ₹62,000)
+      // 2. Purchase: Shah Textiles (200m white cotton @ ₹310/m = ₹62,000)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -179,29 +163,7 @@ export async function POST(req: NextRequest) {
         rate: 310,
       });
 
-      // 3. Purchase: Shah Textiles #2 (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
-      const { data: e3 } = await sb
-        .from("entries")
-        .insert({
-          shop_id: shop.id,
-          type: "purchase",
-          party_id: shah.id,
-          bill_no: "4599",
-          date: daysAgo(14),
-          due_date: daysAhead(16),
-          status: "confirmed",
-          paid_amount: 14000,
-        })
-        .select("*")
-        .single();
-      await sb.from("entry_lines").insert({
-        entry_id: e3.id,
-        item_id: cotton.id,
-        qty: 100,
-        rate: 340,
-      });
-
-      // 4. Sale: Ramesh Traders (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
+      // 3. Sale: Ramesh Traders (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
       const { data: e4 } = await sb
         .from("entries")
         .insert({
@@ -223,39 +185,6 @@ export async function POST(req: NextRequest) {
         rate: 420,
       });
 
-      // 5. Sale: Kiran Boutique (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
-      const { data: e5 } = await sb
-        .from("entries")
-        .insert({
-          shop_id: shop.id,
-          type: "sale",
-          party_id: kiran.id,
-          bill_no: "S-102",
-          date: daysAgo(3),
-          due_date: daysAhead(27),
-          status: "confirmed",
-          paid_amount: 2000,
-        })
-        .select("*")
-        .single();
-      await sb.from("entry_lines").insert({
-        entry_id: e5.id,
-        item_id: cotton.id,
-        qty: 10,
-        rate: 450,
-      });
-
-      // 6. Payment to Shah Textiles: ₹48,000 via UPI (Settles Shah's account fully)
-      await sb.from("entries").insert({
-        shop_id: shop.id,
-        type: "payment",
-        party_id: shah.id,
-        date: daysAgo(1),
-        status: "confirmed",
-        paid_amount: 48000,
-        payment_method: "UPI",
-      });
-
       const state = await computeLedgerState(shop.id);
       return NextResponse.json({ ok: true, state });
     }
@@ -264,16 +193,14 @@ export async function POST(req: NextRequest) {
       const {
         type,
         party_name,
-        item_name,
-        unit,
-        qty,
-        rate,
+        items,
         bill_no,
         paid_amount,
         due_days,
         days_ago,
         payment_method,
       } = body;
+
       const defaultPartyType = type === "sale" ? "customer" : "vendor";
       const party = await getOrCreateParty(shop.id, party_name, defaultPartyType);
 
@@ -305,18 +232,18 @@ export async function POST(req: NextRequest) {
 
       if (error) throw new Error(error.message);
 
-      if (type === "purchase" || type === "sale") {
-        const item = await getOrCreateItem(
-          shop.id,
-          item_name || "white cotton",
-          unit || "m"
-        );
-        await sb.from("entry_lines").insert({
-          entry_id: entry.id,
-          item_id: item.id,
-          qty: Number(qty) || 1,
-          rate: Number(rate) || 0,
-        });
+      if (items && Array.isArray(items)) {
+        for (const it of items) {
+          const itemRec = await getOrCreateItem(shop.id, it.item_name || "cloth", it.unit || "m");
+          const qty = Number(it.qty) || 1;
+          const rate = Number(it.rate) || 0;
+          await sb.from("entry_lines").insert({
+            entry_id: entry.id,
+            item_id: itemRec.id,
+            qty,
+            rate,
+          });
+        }
       }
 
       const state = await computeLedgerState(shop.id);

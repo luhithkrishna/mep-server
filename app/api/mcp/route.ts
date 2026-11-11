@@ -17,40 +17,59 @@ const CORS_HEADERS = {
 const TOOLS = [
   {
     name: "create_purchase",
-    description: "Record a cloth stock purchase from a vendor as a draft entry.",
+    description: "Record a vendor purchase bill with multiple items (e.g. sarees, jeans, jackets) and partial upfront payment.",
     inputSchema: {
       type: "object",
       properties: {
-        party_name: { type: "string" },
-        item_name: { type: "string" },
-        qty: { type: "number" },
-        rate: { type: "number" },
-        unit: { type: "string" },
+        party_name: { type: "string", description: "Vendor name, e.g. 'Sai Ram Textile'" },
+        items: {
+          type: "array",
+          description: "List of items purchased",
+          items: {
+            type: "object",
+            properties: {
+              item_name: { type: "string", description: "Name of item, e.g. 'sarees'" },
+              qty: { type: "number", description: "Quantity" },
+              unit: { type: "string", description: "'m' for meters or 'pcs' for pieces" },
+              rate: { type: "number", description: "Price per unit in INR" }
+            },
+            required: ["item_name", "qty", "rate"]
+          }
+        },
         bill_no: { type: "string" },
-        paid_amount: { type: "number" },
+        paid_amount: { type: "number", description: "Amount paid upfront in INR" },
         due_days: { type: "number" },
-        days_ago: { type: "number" },
+        days_ago: { type: "number" }
       },
-      required: ["party_name", "item_name", "qty", "rate"],
-    },
+      required: ["party_name", "items"]
+    }
   },
   {
     name: "create_sale",
-    description: "Record a textile sale to a customer as a draft entry.",
+    description: "Record a customer sale with multiple items and partial payment.",
     inputSchema: {
       type: "object",
       properties: {
         party_name: { type: "string" },
-        item_name: { type: "string" },
-        qty: { type: "number" },
-        total_amount: { type: "number" },
-        rate: { type: "number" },
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              item_name: { type: "string" },
+              qty: { type: "number" },
+              unit: { type: "string" },
+              rate: { type: "number" }
+            },
+            required: ["item_name", "qty", "rate"]
+          }
+        },
         paid_amount: { type: "number" },
         due_days: { type: "number" },
-        days_ago: { type: "number" },
+        days_ago: { type: "number" }
       },
-      required: ["party_name", "item_name", "qty"],
-    },
+      required: ["party_name", "items"]
+    }
   },
   {
     name: "create_payment",
@@ -60,10 +79,10 @@ const TOOLS = [
       properties: {
         party_name: { type: "string" },
         amount: { type: "number" },
-        method: { type: "string" },
+        method: { type: "string" }
       },
-      required: ["party_name", "amount"],
-    },
+      required: ["party_name", "amount"]
+    }
   },
   {
     name: "get_stock",
@@ -90,41 +109,38 @@ const TOOLS = [
 async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: string | null) {
   const sb = getSupabase();
   const shop = await getShop(mcpKey);
-  const origin = new URL(reqUrl).origin;
 
-  if (name === "create_purchase") {
-    const { party_name, item_name, qty, rate, unit = "m", bill_no, paid_amount = 0, due_days, days_ago } = args || {};
-    const party = await getOrCreateParty(shop.id, party_name, "vendor");
-    const item = await getOrCreateItem(shop.id, item_name, unit);
+  if (name === "create_purchase" || name === "create_sale") {
+    const { party_name, items = [], paid_amount = 0, due_days, days_ago, bill_no } = args || {};
+    const defaultType = name === "create_sale" ? "customer" : "vendor";
+    const party = await getOrCreateParty(shop.id, party_name, defaultType);
     const entryDate = days_ago ? new Date(Date.now() - days_ago * 86400000).toISOString() : new Date().toISOString();
     const dueDate = due_days ? new Date(new Date(entryDate).getTime() + due_days * 86400000).toISOString() : null;
 
     const { data: entry, error } = await sb.from("entries").insert({
-      shop_id: shop.id, type: "purchase", party_id: party.id, bill_no: bill_no ? String(bill_no) : null,
-      date: entryDate, due_date: dueDate, status: "draft", paid_amount: Number(paid_amount) || 0,
+      shop_id: shop.id,
+      type: name === "create_sale" ? "sale" : "purchase",
+      party_id: party.id,
+      bill_no: bill_no ? String(bill_no) : null,
+      date: entryDate,
+      due_date: dueDate,
+      status: "draft",
+      paid_amount: Number(paid_amount) || 0,
     }).select("*").single();
+
     if (error) throw new Error(error.message);
 
-    await sb.from("entry_lines").insert({ entry_id: entry.id, item_id: item.id, qty: Number(qty), rate: Number(rate) });
-    return `Draft Purchase saved in Inbox for ${party.name}.`;
-  }
+    for (const it of items) {
+      const itemRec = await getOrCreateItem(shop.id, it.item_name || "cloth", it.unit || "m");
+      await sb.from("entry_lines").insert({
+        entry_id: entry.id,
+        item_id: itemRec.id,
+        qty: Number(it.qty) || 1,
+        rate: Number(it.rate) || 0,
+      });
+    }
 
-  if (name === "create_sale") {
-    const { party_name, item_name, qty, total_amount, rate, paid_amount = 0, due_days, days_ago } = args || {};
-    const computedRate = rate !== undefined ? Number(rate) : total_amount !== undefined && qty > 0 ? Number((total_amount / qty).toFixed(2)) : 0;
-    const party = await getOrCreateParty(shop.id, party_name, "customer");
-    const item = await getOrCreateItem(shop.id, item_name, "m");
-    const entryDate = days_ago ? new Date(Date.now() - days_ago * 86400000).toISOString() : new Date().toISOString();
-    const dueDate = due_days ? new Date(new Date(entryDate).getTime() + due_days * 86400000).toISOString() : null;
-
-    const { data: entry, error } = await sb.from("entries").insert({
-      shop_id: shop.id, type: "sale", party_id: party.id, date: entryDate, due_date: dueDate,
-      status: "draft", paid_amount: Number(paid_amount) || 0,
-    }).select("*").single();
-    if (error) throw new Error(error.message);
-
-    await sb.from("entry_lines").insert({ entry_id: entry.id, item_id: item.id, qty: Number(qty), rate: computedRate });
-    return `Draft Sale saved in Inbox for ${party.name}.`;
+    return `Draft multi-item ${name === "create_sale" ? "sale" : "purchase"} saved in Inbox for ${party.name}.`;
   }
 
   if (name === "create_payment") {
@@ -148,7 +164,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     const state = await computeLedgerState(shop.id);
     const party = state.parties.find((p: any) => p.name.toLowerCase().includes(party_name.toLowerCase()));
     if (!party) return `Party not found.`;
-    return `${party.name} (${party.type}): Balance ₹${party.balance} | Statement: ${origin}/s/${party.statement_token}`;
+    return `${party.name} (${party.type}): Balance ₹${party.balance} | Statement: ${new URL(reqUrl).origin}/s/${party.statement_token}`;
   }
 
   if (name === "list_outstanding") {

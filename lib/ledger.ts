@@ -231,9 +231,6 @@ export async function computeLedgerState(shopId: string) {
 
   const enrichedEntries = (entries || []).map((entry: any) => {
     const eLines = linesByEntry.get(entry.id) || [];
-    const firstLine = eLines[0] || null;
-    const qty = firstLine ? Number(firstLine.qty) : 0;
-    const rate = firstLine ? Number(firstLine.rate) : 0;
     const lineTotal = eLines.reduce(
       (acc: number, l: any) => acc + Number(l.qty) * Number(l.rate),
       0
@@ -244,10 +241,12 @@ export async function computeLedgerState(shopId: string) {
 
     let cost = 0;
     let profit = 0;
-    if (entry.type === "sale" && firstLine) {
-      const st = stockMap.get(firstLine.item_id);
-      const unitCost = st ? st.avg_cost : 0;
-      cost = Number((qty * unitCost).toFixed(2));
+    if (entry.type === "sale") {
+      for (const l of eLines) {
+        const st = stockMap.get(l.item_id);
+        const unitCost = st ? st.avg_cost : 0;
+        cost += Number((Number(l.qty) * unitCost).toFixed(2));
+      }
       profit = Number((totalAmount - cost).toFixed(2));
     }
 
@@ -260,10 +259,7 @@ export async function computeLedgerState(shopId: string) {
     return {
       ...entry,
       party: partyMap.get(entry.party_id) || null,
-      item: firstLine?.item || null,
-      line_id: firstLine?.id || null,
-      qty,
-      rate,
+      lines: eLines,
       due_days: dueDays,
       total_amount: totalAmount,
       paid_amount: paidAmount,
@@ -290,14 +286,16 @@ export async function computeLedgerState(shopId: string) {
       if (e.type === "purchase" || e.type === "sale") {
         totalBilled += e.total_amount;
         totalPaid += e.paid_amount;
-        totalQty += Number(e.qty || 0);
         orderCount += 1;
         if (e.type === "sale") {
           totalProfit += e.profit;
           totalCost += e.cost;
         }
-        if (e.item?.name) {
-          itemCounts[e.item.name] = (itemCounts[e.item.name] || 0) + Number(e.qty || 0);
+        for (const l of e.lines || []) {
+          totalQty += Number(l.qty || 0);
+          if (l.item?.name) {
+            itemCounts[l.item.name] = (itemCounts[l.item.name] || 0) + Number(l.qty || 0);
+          }
         }
       } else if (e.type === "payment") {
         totalPaid += e.paid_amount;
