@@ -8,21 +8,62 @@ export default function PublicStatementPage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [ackStatus, setAckStatus] = useState<"none" | "verified" | "disputed">("none");
+  const [ackTime, setAckTime] = useState<string>("");
 
   useEffect(() => {
     if (!token) return;
+    const saved =
+      typeof window !== "undefined"
+        ? localStorage.getItem(`mcp_ack_${token}`)
+        : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setAckStatus(parsed.status);
+        setAckTime(parsed.time);
+      } catch {}
+    }
+
     fetch(`/api/ledger?statement_token=${token}`)
       .then((r) => r.json())
       .then((res) => {
         setData(res);
+        if (res?.party?.ack) {
+          setAckStatus(res.party.ack.status);
+          setAckTime(res.party.ack.time);
+        }
         setLoading(false);
       });
   }, [token]);
 
+  async function handleAck(status: "verified" | "disputed") {
+    const now = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    setAckStatus(status);
+    setAckTime(now);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        `mcp_ack_${token}`,
+        JSON.stringify({ status, time: now })
+      );
+    }
+    await fetch("/api/ledger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "ack_statement",
+        statement_token: token,
+        status,
+      }),
+    });
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <p className="text-slate-400 text-sm">Loading live ledger statement...</p>
+        <p className="text-slate-400 text-sm">Loading verified statement...</p>
       </div>
     );
   }
@@ -31,9 +72,9 @@ export default function PublicStatementPage() {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full text-center">
-          <h1 className="text-lg font-bold text-rose-400">Statement Not Found</h1>
+          <h1 className="text-lg font-bold text-rose-400">Statement Link Expired or Invalid</h1>
           <p className="text-xs text-slate-400 mt-2">
-            This statement link is invalid or has been reset.
+            This capability token does not match an active party record.
           </p>
         </div>
       </div>
@@ -46,26 +87,40 @@ export default function PublicStatementPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-white py-6 px-4 flex justify-center">
       <div className="w-full max-w-md space-y-4">
+        {/* Security & Data Isolation Banner */}
+        <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-[11px]">
+          <span className="text-emerald-300 font-semibold">
+            🔒 Capability-Scoped Read-Only Ledger
+          </span>
+          <span className="text-slate-400">No Login Required</span>
+        </div>
+
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 font-bold">
-              ● Live Statement Link
+            <span
+              className={`text-[10px] uppercase tracking-wider px-2.5 py-1 rounded-full font-bold ${
+                isVendor
+                  ? "bg-amber-500/15 text-amber-300"
+                  : "bg-sky-500/15 text-sky-300"
+              }`}
+            >
+              ● {party.type} Statement
             </span>
             <button
               onClick={() => window.print()}
               className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded-lg text-slate-300 cursor-pointer"
             >
-              Print / Save PDF
+              🖨️ Print / Save PDF
             </button>
           </div>
 
           <h1 className="text-xl font-bold mt-3">{party.name}</h1>
           <p className="text-xs text-slate-400">
-            Ledger with{" "}
+            Verified account with{" "}
             <span className="text-slate-200 font-semibold">
               {shop?.name || "MCP Server"}
             </span>{" "}
-            ({party.type.toUpperCase()}) • Works 24/7 with no login
+            • Isolated strictly to {party.name}&apos;s bills
           </p>
 
           <div className="mt-4 p-4 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
@@ -75,7 +130,15 @@ export default function PublicStatementPage() {
                   ? "Net Balance Payable to You"
                   : "Net Balance Due from You"}
               </p>
-              <p className="text-2xl font-extrabold text-emerald-400 mt-0.5">
+              <p
+                className={`text-2xl font-extrabold mt-0.5 ${
+                  party.balance === 0
+                    ? "text-emerald-400"
+                    : isVendor
+                    ? "text-amber-400"
+                    : "text-sky-400"
+                }`}
+              >
                 ₹{Number(party.balance).toLocaleString("en-IN")}
               </p>
             </div>
@@ -95,31 +158,49 @@ export default function PublicStatementPage() {
             </div>
           </div>
 
-          {/* Interactive Second-Person Confirmation */}
+          {/* Two-Way Counterparty Verification */}
           <div className="mt-4 pt-3 border-t border-slate-800">
             {ackStatus === "none" ? (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setAckStatus("verified")}
-                  className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
-                >
-                  ✓ Confirm Balance (₹{Number(party.balance).toLocaleString("en-IN")})
-                </button>
-                <button
-                  onClick={() => setAckStatus("disputed")}
-                  className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
-                >
-                  Flag Issue
-                </button>
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-slate-400">
+                  Do you agree with this running balance?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleAck("verified")}
+                    className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+                  >
+                    ✓ Verify Balance (₹{Number(party.balance).toLocaleString("en-IN")})
+                  </button>
+                  <button
+                    onClick={() => handleAck("disputed")}
+                    className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Flag Dispute
+                  </button>
+                </div>
               </div>
             ) : ackStatus === "verified" ? (
-              <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-center text-xs text-emerald-300 font-semibold">
-                ✓ Balance verified by {party.name} on{" "}
-                {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300 font-semibold">
+                <span>
+                  ✓ Verified by {party.name} {ackTime ? `at ${ackTime}` : ""}
+                </span>
+                <button
+                  onClick={() => setAckStatus("none")}
+                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Change
+                </button>
               </div>
             ) : (
-              <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-center text-xs text-amber-300 font-semibold">
-                ⚠ Issue flagged for shop owner review.
+              <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-semibold">
+                <span>⚠ Dispute flagged for Shop Admin review</span>
+                <button
+                  onClick={() => setAckStatus("none")}
+                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Change
+                </button>
               </div>
             )}
           </div>

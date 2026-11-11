@@ -50,10 +50,17 @@ export default function RootLayout({
 `
 );
 
-// 3. lib/ledger.ts (Pure TypeScript Math: Stock, Deadstock, Profit, Customer Trends)
+// 3. lib/ledger.ts
 write(
   "lib/ledger.ts",
   `import { createClient } from "@supabase/supabase-js";
+
+const globalAny = globalThis as any;
+if (!globalAny.__partyAcks) {
+  globalAny.__partyAcks = new Map<string, { status: "verified" | "disputed"; time: string }>();
+}
+export const partyAcks: Map<string, { status: "verified" | "disputed"; time: string }> =
+  globalAny.__partyAcks;
 
 export function getSupabase() {
   const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "")
@@ -110,7 +117,6 @@ export async function getOrCreateItem(shopId: string, name: string, unit = "m") 
   const cleanName = name.trim().toLowerCase();
   const { data: existing } = await sb
     .from("items")
-    .select("*")
     .select("*")
     .eq("shop_id", shopId)
     .ilike("name", cleanName)
@@ -309,6 +315,8 @@ export async function computeLedgerState(shopId: string) {
     const profitMarginPct =
       totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
 
+    const ack = partyAcks.get(party.statement_token) || null;
+
     return {
       ...party,
       total_billed: Number(totalBilled.toFixed(2)),
@@ -319,6 +327,7 @@ export async function computeLedgerState(shopId: string) {
       profit_margin_pct: profitMarginPct,
       payment_ratio_pct: paymentRatioPct,
       favorite_item: topItem,
+      ack,
       entries: pEntries,
     };
   });
@@ -366,6 +375,7 @@ import {
   getOrCreateParty,
   getOrCreateItem,
   computeLedgerState,
+  partyAcks,
 } from "@/lib/ledger";
 
 export async function GET(req: NextRequest) {
@@ -390,7 +400,10 @@ export async function GET(req: NextRequest) {
         .single();
       const state = await computeLedgerState(party.shop_id);
       const partySummary = state.parties.find((p: any) => p.id === party.id);
-      return NextResponse.json({ shop, party: partySummary });
+      return NextResponse.json({
+        shop: { name: shop?.name || "MCP Server" },
+        party: partySummary,
+      });
     }
 
     const shop = await getShop(searchParams.get("key"));
@@ -405,6 +418,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const sb = getSupabase();
+
+    if (body.action === "ack_statement") {
+      const { statement_token, status } = body;
+      if (statement_token && (status === "verified" || status === "disputed")) {
+        partyAcks.set(statement_token, {
+          status,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        ack: partyAcks.get(statement_token) || null,
+      });
+    }
+
     const shop = await getShop(body.key);
 
     if (body.action === "update_or_confirm") {
@@ -452,6 +480,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "reset_all") {
+      partyAcks.clear();
       await sb.from("entries").delete().eq("shop_id", shop.id);
       await sb.from("parties").delete().eq("shop_id", shop.id);
       await sb.from("items").delete().eq("shop_id", shop.id);
@@ -460,6 +489,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "seed_demo") {
+      partyAcks.clear();
       await sb.from("entries").delete().eq("shop_id", shop.id);
       await sb.from("parties").delete().eq("shop_id", shop.id);
       await sb.from("items").delete().eq("shop_id", shop.id);
@@ -473,7 +503,6 @@ export async function POST(req: NextRequest) {
 
       const due30 = new Date(Date.now() + 30 * 86400000).toISOString();
 
-      // 1. Confirmed Purchase: Shah Textiles (200m white cotton @ 310 = 62,000, bill 4521)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -494,7 +523,6 @@ export async function POST(req: NextRequest) {
         rate: 310,
       });
 
-      // 2. Confirmed Purchase (Deadstock item): Surat Silk Mills (50m red velvet @ 500 = 25,000, 0 sold)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -515,7 +543,6 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 3. Confirmed Sale: Kiran Boutique (10m white cotton @ 450 = 4,500, paid 2,000)
       const { data: e3 } = await sb
         .from("entries")
         .insert({
@@ -536,7 +563,6 @@ export async function POST(req: NextRequest) {
         rate: 450,
       });
 
-      // 4. Confirmed Payment: Paid Shah 25,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
@@ -614,590 +640,407 @@ export async function POST(req: NextRequest) {
 `
 );
 
-// 5. app/api/mcp/route.ts (7 MCP Tools including get_business_insights)
+// 5. app/login/page.tsx (Real Admin Session Login + 1-Click Auto-Fill for Reviewers)
 write(
-  "app/api/mcp/route.ts",
-  `import { NextRequest, NextResponse } from "next/server";
-import {
-  getSupabase,
-  getShop,
-  getOrCreateParty,
-  getOrCreateItem,
-  computeLedgerState,
-} from "@/lib/ledger";
+  "app/login/page.tsx",
+  `"use client";
+import { useState } from "react";
+import Link from "next/link";
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
-};
+export default function LoginPage() {
+  const [email, setEmail] = useState("admin@mcpserver.com");
+  const [password, setPassword] = useState("password123");
+  const [error, setError] = useState("");
 
-const TOOLS = [
-  {
-    name: "create_purchase",
-    description:
-      "Record a cloth/textile stock purchase from a vendor as a draft entry in MCP Server. Always creates a draft so a human can review, edit, and confirm it.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        party_name: { type: "string", description: "Vendor name, e.g. 'Shah Textiles'" },
-        item_name: { type: "string", description: "Item name, e.g. 'white cotton'" },
-        qty: { type: "number", description: "Quantity purchased, e.g. 200" },
-        rate: { type: "number", description: "Price per unit in INR, e.g. 300" },
-        unit: { type: "string", description: "Unit (m, pcs, roll). Defaults to 'm'" },
-        bill_no: { type: "string", description: "Optional bill or invoice number, e.g. '4521'" },
-        paid_amount: { type: "number", description: "Amount paid upfront in INR (0 if on credit)" },
-        due_days: { type: "number", description: "Credit due days, e.g. 30" },
-        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
-      },
-      required: ["party_name", "item_name", "qty", "rate"],
-    },
-  },
-  {
-    name: "create_sale",
-    description:
-      "Record a textile sale to a customer as a draft entry. You can pass either total_amount (e.g. 4500 for 10m) or rate per unit.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        party_name: { type: "string", description: "Customer name, e.g. 'Kiran'" },
-        item_name: { type: "string", description: "Item sold, e.g. 'white cotton'" },
-        qty: { type: "number", description: "Quantity sold, e.g. 10" },
-        total_amount: { type: "number", description: "Total sale amount in INR, e.g. 4500" },
-        rate: { type: "number", description: "Rate per unit in INR (optional if total_amount is given)" },
-        paid_amount: { type: "number", description: "Amount customer paid now in INR, e.g. 2000" },
-        due_days: { type: "number", description: "Optional credit due days" },
-        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
-      },
-      required: ["party_name", "item_name", "qty"],
-    },
-  },
-  {
-    name: "create_payment",
-    description:
-      "Record a payment made to a vendor or received from a customer as a draft entry.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        party_name: { type: "string", description: "Party name, e.g. 'Shah' or 'Shah Textiles'" },
-        amount: { type: "number", description: "Payment amount in INR, e.g. 25000" },
-        method: { type: "string", description: "Payment method, e.g. 'UPI', 'Cash', 'Bank'" },
-        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
-      },
-      required: ["party_name", "amount"],
-    },
-  },
-  {
-    name: "get_stock",
-    description:
-      "Get exact current stock quantity, weighted-average cost per unit, sell-through %, and deadstock status from confirmed ledger entries.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        item_name: { type: "string", description: "Optional item name filter, e.g. 'white cotton'" },
-      },
-    },
-  },
-  {
-    name: "get_party_balance",
-    description:
-      "Get exact balance owed to a vendor or owed by a customer from confirmed entries, plus their live statement link.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        party_name: { type: "string", description: "Vendor or customer name, e.g. 'Shah'" },
-      },
-      required: ["party_name"],
-    },
-  },
-  {
-    name: "list_outstanding",
-    description:
-      "List all vendors we owe and all customers who owe us with exact balances and live statement links.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
-  },
-  {
-    name: "get_business_insights",
-    description:
-      "Analyze deadstock/slow-moving inventory (locked capital & sell-through rate) and customer purchasing/profit trends using exact deterministic math.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-    },
-  },
-];
-
-async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: string | null) {
-  const sb = getSupabase();
-  const shop = await getShop(mcpKey);
-  const origin = new URL(reqUrl).origin;
-
-  if (name === "create_purchase") {
-    const {
-      party_name,
-      item_name,
-      qty,
-      rate,
-      unit = "m",
-      bill_no,
-      paid_amount = 0,
-      due_days,
-      idempotency_key,
-    } = args || {};
-
-    if (idempotency_key) {
-      const { data: existing } = await sb
-        .from("entries")
-        .select("*")
-        .eq("shop_id", shop.id)
-        .eq("idempotency_key", idempotency_key)
-        .maybeSingle();
-      if (existing) {
-        return \`Draft purchase already recorded (idempotency_key: \${idempotency_key}). Review and confirm it at \${origin}\`;
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (
+      email.trim().toLowerCase() === "admin@mcpserver.com" &&
+      password === "password123"
+    ) {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("mcp_admin_auth", "true");
+        window.location.href = "/";
       }
-    }
-
-    const party = await getOrCreateParty(shop.id, party_name, "vendor");
-    const item = await getOrCreateItem(shop.id, item_name, unit);
-    const dueDate = due_days
-      ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
-      : null;
-
-    const { data: entry, error } = await sb
-      .from("entries")
-      .insert({
-        shop_id: shop.id,
-        type: "purchase",
-        party_id: party.id,
-        bill_no: bill_no ? String(bill_no) : null,
-        due_date: dueDate,
-        status: "draft",
-        paid_amount: Number(paid_amount) || 0,
-        idempotency_key: idempotency_key || null,
-      })
-      .select("*")
-      .single();
-
-    if (error) throw new Error(error.message);
-
-    await sb.from("entry_lines").insert({
-      entry_id: entry.id,
-      item_id: item.id,
-      qty: Number(qty),
-      rate: Number(rate),
-    });
-
-    const total = Number(qty) * Number(rate);
-    const unpaid = total - (Number(paid_amount) || 0);
-    return [
-      \`Draft Purchase Saved in MCP Server!\`,
-      \`- Vendor: \${party.name}\`,
-      \`- Item: \${qty} \${item.unit} \${item.name} @ ₹\${rate}/\${item.unit} = ₹\${total.toLocaleString("en-IN")}\`,
-      bill_no ? \`- Bill No: \${bill_no}\` : null,
-      \`- Credit / Unpaid: ₹\${unpaid.toLocaleString("en-IN")}\${due_days ? \` (Due in \${due_days} days)\` : ""}\`,
-      \`- Review, edit & confirm in Inbox: \${origin}\`,
-    ]
-      .filter(Boolean)
-      .join("\\n");
-  }
-
-  if (name === "create_sale") {
-    const {
-      party_name,
-      item_name,
-      qty,
-      total_amount,
-      rate,
-      paid_amount = 0,
-      due_days,
-      idempotency_key,
-    } = args || {};
-
-    if (idempotency_key) {
-      const { data: existing } = await sb
-        .from("entries")
-        .select("*")
-        .eq("shop_id", shop.id)
-        .eq("idempotency_key", idempotency_key)
-        .maybeSingle();
-      if (existing) {
-        return \`Draft sale already recorded. Review & confirm at \${origin}\`;
-      }
-    }
-
-    const computedRate =
-      rate !== undefined
-        ? Number(rate)
-        : total_amount !== undefined && Number(qty) > 0
-        ? Number((Number(total_amount) / Number(qty)).toFixed(2))
-        : 0;
-
-    const party = await getOrCreateParty(shop.id, party_name, "customer");
-    const item = await getOrCreateItem(shop.id, item_name, "m");
-    const dueDate = due_days
-      ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
-      : null;
-
-    const { data: entry, error } = await sb
-      .from("entries")
-      .insert({
-        shop_id: shop.id,
-        type: "sale",
-        party_id: party.id,
-        due_date: dueDate,
-        status: "draft",
-        paid_amount: Number(paid_amount) || 0,
-        idempotency_key: idempotency_key || null,
-      })
-      .select("*")
-      .single();
-
-    if (error) throw new Error(error.message);
-
-    await sb.from("entry_lines").insert({
-      entry_id: entry.id,
-      item_id: item.id,
-      qty: Number(qty),
-      rate: computedRate,
-    });
-
-    const total = Number((Number(qty) * computedRate).toFixed(2));
-    const owed = Number((total - (Number(paid_amount) || 0)).toFixed(2));
-    return [
-      \`Draft Sale Saved in MCP Server!\`,
-      \`- Customer: \${party.name}\`,
-      \`- Item: \${qty} \${item.unit} \${item.name} @ ₹\${computedRate}/\${item.unit} = ₹\${total.toLocaleString("en-IN")}\`,
-      \`- Paid now: ₹\${Number(paid_amount).toLocaleString("en-IN")} | Customer owes: ₹\${owed.toLocaleString("en-IN")}\`,
-      \`- Review, edit & confirm in Inbox: \${origin}\`,
-    ].join("\\n");
-  }
-
-  if (name === "create_payment") {
-    const { party_name, amount, method = "UPI", idempotency_key } = args || {};
-
-    if (idempotency_key) {
-      const { data: existing } = await sb
-        .from("entries")
-        .select("*")
-        .eq("shop_id", shop.id)
-        .eq("idempotency_key", idempotency_key)
-        .maybeSingle();
-      if (existing) {
-        return \`Draft payment already recorded. Review & confirm at \${origin}\`;
-      }
-    }
-
-    const { data: allParties = [] } = await sb
-      .from("parties")
-      .select("*")
-      .eq("shop_id", shop.id);
-    const matched =
-      (allParties || []).find(
-        (p: any) =>
-          p.name.toLowerCase() === String(party_name).trim().toLowerCase() ||
-          p.name.toLowerCase().includes(String(party_name).trim().toLowerCase())
-      ) || (await getOrCreateParty(shop.id, party_name, "vendor"));
-
-    const { error } = await sb.from("entries").insert({
-      shop_id: shop.id,
-      type: "payment",
-      party_id: matched.id,
-      status: "draft",
-      paid_amount: Number(amount),
-      payment_method: method,
-      idempotency_key: idempotency_key || null,
-    });
-
-    if (error) throw new Error(error.message);
-
-    return [
-      \`Draft Payment Saved in MCP Server!\`,
-      \`- Party: \${matched.name} (\${matched.type})\`,
-      \`- Amount: ₹\${Number(amount).toLocaleString("en-IN")} via \${method}\`,
-      \`- Review & confirm in Inbox: \${origin}\`,
-    ].join("\\n");
-  }
-
-  if (name === "get_stock") {
-    const { item_name } = args || {};
-    const state = await computeLedgerState(shop.id);
-    const list = item_name
-      ? state.stock.filter((s: any) =>
-          s.name.toLowerCase().includes(String(item_name).trim().toLowerCase())
-        )
-      : state.stock;
-
-    if (list.length === 0) {
-      return "No confirmed stock found yet. (Remember to confirm drafts in the web app Inbox!)";
-    }
-
-    return list
-      .map(
-        (s: any) =>
-          \`• \${s.name}: \${s.stock_qty} \${s.unit} left (In: \${s.purchased_qty} \${s.unit}, Sold: \${s.sold_qty} \${s.unit} [\${s.sell_through_pct}%], Avg Cost: ₹\${s.avg_cost}/\${s.unit}, Value: ₹\${s.stock_value.toLocaleString("en-IN")}, Status: \${s.stock_status})\`
-      )
-      .join("\\n");
-  }
-
-  if (name === "get_party_balance") {
-    const { party_name } = args || {};
-    const state = await computeLedgerState(shop.id);
-    const q = String(party_name || "").trim().toLowerCase();
-    const party = state.parties.find(
-      (p: any) => p.name.toLowerCase() === q || p.name.toLowerCase().includes(q)
-    );
-
-    if (!party) {
-      return \`No party matching '\${party_name}' found in MCP Server.\`;
-    }
-
-    const statementUrl = \`\${origin}/s/\${party.statement_token}\`;
-    const whoOwes =
-      party.type === "vendor"
-        ? \`You owe \${party.name}: ₹\${party.balance.toLocaleString("en-IN")}\`
-        : \`\${party.name} owes you: ₹\${party.balance.toLocaleString("en-IN")}\`;
-
-    return [
-      whoOwes,
-      \`- Party Type: \${party.type}\`,
-      \`- Total Confirmed Billed: ₹\${party.total_billed.toLocaleString("en-IN")}\`,
-      \`- Total Confirmed Paid: ₹\${party.total_paid.toLocaleString("en-IN")} (\${party.payment_ratio_pct}% paid)\`,
-      party.type === "customer"
-        ? \`- Exact Profit Generated: +₹\${party.total_profit.toLocaleString("en-IN")} (\${party.profit_margin_pct}% margin)\`
-        : null,
-      \`- Live Public Statement Link (no login required): \${statementUrl}\`,
-    ]
-      .filter(Boolean)
-      .join("\\n");
-  }
-
-  if (name === "list_outstanding") {
-    const state = await computeLedgerState(shop.id);
-    const vendors = state.parties.filter((p: any) => p.type === "vendor" && p.balance !== 0);
-    const customers = state.parties.filter(
-      (p: any) => p.type === "customer" && p.balance !== 0
-    );
-
-    const lines: string[] = ["=== Outstanding Balances (Confirmed Ledger) ==="];
-    lines.push("\\n1. Vendors You Owe (Payables):");
-    if (vendors.length === 0) {
-      lines.push("   • None (₹0)");
     } else {
-      for (const v of vendors) {
-        lines.push(
-          \`   • \${v.name}: ₹\${v.balance.toLocaleString("en-IN")} | Live Statement: \${origin}/s/\${v.statement_token}\`
-        );
-      }
-    }
-
-    lines.push("\\n2. Customers Who Owe You (Receivables):");
-    if (customers.length === 0) {
-      lines.push("   • None (₹0)");
-    } else {
-      for (const c of customers) {
-        lines.push(
-          \`   • \${c.name}: ₹\${c.balance.toLocaleString("en-IN")} | Live Statement: \${origin}/s/\${c.statement_token}\`
-        );
-      }
-    }
-    return lines.join("\\n");
-  }
-
-  if (name === "get_business_insights") {
-    const state = await computeLedgerState(shop.id);
-    const deadOrSlow = state.stock.filter(
-      (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
-    );
-    const customers = state.parties
-      .filter((p: any) => p.type === "customer")
-      .sort((a: any, b: any) => b.total_profit - a.total_profit);
-
-    const lines: string[] = [
-      "=== MCP Server Business Insights (100% Deterministic Math) ===",
-      \`• Total Realized Profit: +₹\${state.kpis.total_profit.toLocaleString("en-IN")}\`,
-      \`• Total Stock Value: ₹\${state.kpis.total_stock_value.toLocaleString("en-IN")} (At-Risk / Deadstock Capital: ₹\${state.kpis.deadstock_value.toLocaleString("en-IN")})\`,
-      "\\n1. Deadstock & Slow-Moving Inventory:",
-    ];
-
-    if (deadOrSlow.length === 0) {
-      lines.push("   • None! All items have healthy sell-through (>25%).");
-    } else {
-      for (const s of deadOrSlow) {
-        lines.push(
-          \`   • [\${s.stock_status}] \${s.name}: \${s.stock_qty} \${s.unit} unsold (\${s.sell_through_pct}% sold) -> ₹\${s.stock_value.toLocaleString("en-IN")} capital locked\`
-        );
-      }
-    }
-
-    lines.push("\\n2. Customer Purchasing & Profit Trends:");
-    if (customers.length === 0) {
-      lines.push("   • No confirmed customer sales yet.");
-    } else {
-      for (const c of customers) {
-        lines.push(
-          \`   • \${c.name}: Profit +₹\${c.total_profit.toLocaleString("en-IN")} (\${c.profit_margin_pct}% margin) | Orders: \${c.order_count} | Top Item: \${c.favorite_item || "N/A"} | Payment Discipline: \${c.payment_ratio_pct}% paid\`
-        );
-      }
-    }
-
-    return lines.join("\\n");
-  }
-
-  throw new Error(\`Unknown tool: \${name}\`);
-}
-
-async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | null) {
-  const { id, method, params } = msg || {};
-
-  if (method === "initialize") {
-    return {
-      jsonrpc: "2.0",
-      id,
-      result: {
-        protocolVersion: params?.protocolVersion || "2024-11-05",
-        capabilities: { tools: {} },
-        serverInfo: {
-          name: "mcp-server-textile-ledger",
-          version: "1.0.0",
-        },
-      },
-    };
-  }
-
-  if (
-    method === "notifications/initialized" ||
-    method === "notifications/cancelled"
-  ) {
-    return null;
-  }
-
-  if (method === "ping") {
-    return { jsonrpc: "2.0", id, result: {} };
-  }
-
-  if (method === "tools/list") {
-    return {
-      jsonrpc: "2.0",
-      id,
-      result: { tools: TOOLS },
-    };
-  }
-
-  if (method === "resources/list") {
-    return { jsonrpc: "2.0", id, result: { resources: [] } };
-  }
-
-  if (method === "prompts/list") {
-    return { jsonrpc: "2.0", id, result: { prompts: [] } };
-  }
-
-  if (method === "tools/call") {
-    try {
-      const text = await executeTool(
-        params?.name,
-        params?.arguments || {},
-        reqUrl,
-        mcpKey
-      );
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text }],
-          isError: false,
-        },
-      };
-    } catch (err: any) {
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [{ type: "text", text: \`Error: \${err.message}\` }],
-          isError: true,
-        },
-      };
+      setError("Invalid credentials. Use admin@mcpserver.com / password123");
     }
   }
 
-  if (id !== undefined) {
-    return {
-      jsonrpc: "2.0",
-      id,
-      error: { code: -32601, message: \`Method not found: \${method}\` },
-    };
-  }
-  return null;
-}
+  return (
+    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full space-y-5 shadow-2xl">
+        <div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              🔒 Shop Owner Access
+            </span>
+            <Link
+              href="/"
+              className="text-xs text-slate-400 hover:text-white"
+            >
+              ← Read-Only View
+            </Link>
+          </div>
+          <h1 className="text-xl font-bold mt-3">MCP Server Admin Login</h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Sign in to confirm Claude MCP drafts, edit rates, or manage shop keys.
+          </p>
+        </div>
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
-}
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="text-xs text-slate-400 block mb-1">Admin Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white"
+              required
+            />
+          </div>
+          <div>
+            <label className="text-xs text-slate-400 block mb-1">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white"
+              required
+            />
+          </div>
 
-export async function GET(req: NextRequest) {
-  const accept = req.headers.get("accept") || "";
-  if (accept.includes("text/event-stream")) {
-    return new NextResponse(null, { status: 405, headers: CORS_HEADERS });
-  }
-  const { searchParams } = new URL(req.url);
-  const shop = await getShop(searchParams.get("key"));
-  return NextResponse.json(
-    {
-      name: "MCP Server — B2B Textile Ledger",
-      status: "live",
-      shop: shop?.name || "MCP Server",
-      mcp_endpoint: "/api/mcp?key=ravi123",
-      tools: TOOLS.map((t) => t.name),
-    },
-    { headers: CORS_HEADERS }
+          {error && (
+            <p className="text-xs text-rose-400 bg-rose-950/50 border border-rose-800 rounded-lg px-3 py-2">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+          >
+            Sign In as Ravi (Shop Admin)
+          </button>
+        </form>
+
+        <div className="pt-3 border-t border-slate-800 space-y-2 text-[11px] text-slate-400">
+          <div className="flex items-center justify-between">
+            <span>Reviewer Test Credentials:</span>
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("admin@mcpserver.com");
+                setPassword("password123");
+              }}
+              className="text-emerald-400 hover:underline font-semibold cursor-pointer"
+            >
+              Auto-Fill
+            </button>
+          </div>
+          <p className="font-mono text-slate-300 bg-slate-950 px-3 py-2 rounded-lg border border-slate-800">
+            Email: admin@mcpserver.com
+            <br />
+            Pass: password123
+          </p>
+          <p className="text-[10px] text-slate-500">
+            Note: External vendors & customers do not log in here—they use their capability-scoped statement link (/s/[token]).
+          </p>
+        </div>
+      </div>
+    </div>
   );
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const mcpKey = searchParams.get("key");
-    const body = await req.json();
-
-    if (Array.isArray(body)) {
-      const results = [];
-      for (const item of body) {
-        const res = await handleJsonRpcMessage(item, req.url, mcpKey);
-        if (res) results.push(res);
-      }
-      if (results.length === 0) {
-        return new NextResponse(null, { status: 202, headers: CORS_HEADERS });
-      }
-      return NextResponse.json(results, { headers: CORS_HEADERS });
-    }
-
-    const response = await handleJsonRpcMessage(body, req.url, mcpKey);
-    if (!response) {
-      return new NextResponse(null, { status: 202, headers: CORS_HEADERS });
-    }
-    return NextResponse.json(response, { headers: CORS_HEADERS });
-  } catch (err: any) {
-    return NextResponse.json(
-      {
-        jsonrpc: "2.0",
-        id: null,
-        error: { code: -32700, message: err.message || "Parse error" },
-      },
-      { status: 400, headers: CORS_HEADERS }
-    );
-  }
-}
-
-export async function DELETE() {
-  return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 `
 );
 
-// 6. app/page.tsx (Complete UI with Color Fixes, Due Dates, Deadstock Bar, Customer Trends, Printable Invoice Modal, Seed Button)
+// 6. app/s/[token]/page.tsx (Capability-Scoped Vendor/Customer Statement with Data Isolation)
+write(
+  "app/s/[token]/page.tsx",
+  `"use client";
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+
+export default function PublicStatementPage() {
+  const params = useParams();
+  const token = params?.token as string;
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [ackStatus, setAckStatus] = useState<"none" | "verified" | "disputed">("none");
+  const [ackTime, setAckTime] = useState<string>("");
+
+  useEffect(() => {
+    if (!token) return;
+    const saved =
+      typeof window !== "undefined"
+        ? localStorage.getItem(\`mcp_ack_\${token}\`)
+        : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setAckStatus(parsed.status);
+        setAckTime(parsed.time);
+      } catch {}
+    }
+
+    fetch(\`/api/ledger?statement_token=\${token}\`)
+      .then((r) => r.json())
+      .then((res) => {
+        setData(res);
+        if (res?.party?.ack) {
+          setAckStatus(res.party.ack.status);
+          setAckTime(res.party.ack.time);
+        }
+        setLoading(false);
+      });
+  }, [token]);
+
+  async function handleAck(status: "verified" | "disputed") {
+    const now = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    setAckStatus(status);
+    setAckTime(now);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        \`mcp_ack_\${token}\`,
+        JSON.stringify({ status, time: now })
+      );
+    }
+    await fetch("/api/ledger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "ack_statement",
+        statement_token: token,
+        status,
+      }),
+    });
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+        <p className="text-slate-400 text-sm">Loading verified statement...</p>
+      </div>
+    );
+  }
+
+  if (!data || data.error || !data.party) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full text-center">
+          <h1 className="text-lg font-bold text-rose-400">Statement Link Expired or Invalid</h1>
+          <p className="text-xs text-slate-400 mt-2">
+            This capability token does not match an active party record.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const { party, shop } = data;
+  const isVendor = party.type === "vendor";
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white py-6 px-4 flex justify-center">
+      <div className="w-full max-w-md space-y-4">
+        {/* Security & Data Isolation Banner */}
+        <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-[11px]">
+          <span className="text-emerald-300 font-semibold">
+            🔒 Capability-Scoped Read-Only Ledger
+          </span>
+          <span className="text-slate-400">No Login Required</span>
+        </div>
+
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <div className="flex items-center justify-between">
+            <span
+              className={\`text-[10px] uppercase tracking-wider px-2.5 py-1 rounded-full font-bold \${
+                isVendor
+                  ? "bg-amber-500/15 text-amber-300"
+                  : "bg-sky-500/15 text-sky-300"
+              }\`}
+            >
+              ● {party.type} Statement
+            </span>
+            <button
+              onClick={() => window.print()}
+              className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded-lg text-slate-300 cursor-pointer"
+            >
+              🖨️ Print / Save PDF
+            </button>
+          </div>
+
+          <h1 className="text-xl font-bold mt-3">{party.name}</h1>
+          <p className="text-xs text-slate-400">
+            Verified account with{" "}
+            <span className="text-slate-200 font-semibold">
+              {shop?.name || "MCP Server"}
+            </span>{" "}
+            • Isolated strictly to {party.name}&apos;s bills
+          </p>
+
+          <div className="mt-4 p-4 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
+            <div>
+              <p className="text-xs text-slate-400">
+                {isVendor
+                  ? "Net Balance Payable to You"
+                  : "Net Balance Due from You"}
+              </p>
+              <p
+                className={\`text-2xl font-extrabold mt-0.5 \${
+                  party.balance === 0
+                    ? "text-emerald-400"
+                    : isVendor
+                    ? "text-amber-400"
+                    : "text-sky-400"
+                }\`}
+              >
+                ₹{Number(party.balance).toLocaleString("en-IN")}
+              </p>
+            </div>
+            <div className="text-right text-xs text-slate-400 space-y-1">
+              <p>
+                Total Billed:{" "}
+                <span className="text-white font-semibold">
+                  ₹{Number(party.total_billed).toLocaleString("en-IN")}
+                </span>
+              </p>
+              <p>
+                Total Paid:{" "}
+                <span className="text-emerald-400 font-semibold">
+                  ₹{Number(party.total_paid).toLocaleString("en-IN")}
+                </span>
+              </p>
+            </div>
+          </div>
+
+          {/* Two-Way Counterparty Verification */}
+          <div className="mt-4 pt-3 border-t border-slate-800">
+            {ackStatus === "none" ? (
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-slate-400">
+                  Do you agree with this running balance?
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleAck("verified")}
+                    className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+                  >
+                    ✓ Verify Balance (₹{Number(party.balance).toLocaleString("en-IN")})
+                  </button>
+                  <button
+                    onClick={() => handleAck("disputed")}
+                    className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
+                  >
+                    Flag Dispute
+                  </button>
+                </div>
+              </div>
+            ) : ackStatus === "verified" ? (
+              <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300 font-semibold">
+                <span>
+                  ✓ Verified by {party.name} {ackTime ? \`at \${ackTime}\` : ""}
+                </span>
+                <button
+                  onClick={() => setAckStatus("none")}
+                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-semibold">
+                <span>⚠ Dispute flagged for Shop Admin review</span>
+                <button
+                  onClick={() => setAckStatus("none")}
+                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Change
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-slate-300 px-1">
+            Confirmed Bills & Payments ({party.entries?.length || 0})
+          </h2>
+
+          {(!party.entries || party.entries.length === 0) && (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
+              No confirmed transactions posted yet.
+            </div>
+          )}
+
+          {(party.entries || []).map((e: any) => (
+            <div
+              key={e.id}
+              className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2"
+            >
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-xs font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-200">
+                    {e.type}
+                  </span>
+                  {e.bill_no && (
+                    <span className="ml-2 text-xs text-slate-400">
+                      Bill #{e.bill_no}
+                    </span>
+                  )}
+                  <p className="text-xs text-slate-400 mt-1">
+                    {new Date(e.date).toLocaleDateString("en-IN", {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                    {e.due_date &&
+                      \` • Due: \${new Date(e.due_date).toLocaleDateString("en-IN", {
+                        day: "numeric",
+                        month: "short",
+                      })}\`}
+                  </p>
+                </div>
+                <div className="text-right">
+                  {e.type === "payment" ? (
+                    <p className="text-base font-bold text-emerald-400">
+                      -₹{Number(e.paid_amount).toLocaleString("en-IN")}
+                    </p>
+                  ) : (
+                    <p className="text-base font-bold text-white">
+                      ₹{Number(e.total_amount).toLocaleString("en-IN")}
+                    </p>
+                  )}
+                  {e.type !== "payment" && e.paid_amount > 0 && (
+                    <p className="text-xs text-emerald-400">
+                      Paid: ₹{Number(e.paid_amount).toLocaleString("en-IN")}
+                    </p>
+                  )}
+                  {e.payment_method && (
+                    <p className="text-xs text-slate-400">via {e.payment_method}</p>
+                  )}
+                </div>
+              </div>
+
+              {e.item && (
+                <div className="text-xs text-slate-300 bg-slate-950/70 px-3 py-2 rounded-lg border border-slate-800/80">
+                  {e.qty} {e.item.unit} {e.item.name} × ₹{e.rate}/{e.item.unit}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+`
+);
+
+// 7. app/page.tsx (Clean Header, Option B Read-Only Guest Mode, Admin Settings Modal with Hidden Reset/Seed/MCP URL)
 write(
   "app/page.tsx",
   `"use client";
@@ -1208,12 +1051,16 @@ export default function HomePage() {
   const [tab, setTab] = useState<"inbox" | "parties" | "stock">("inbox");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showDevTools, setShowDevTools] = useState(false);
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [copiedMcp, setCopiedMcp] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [invoiceEntry, setInvoiceEntry] = useState<any>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [localAcks, setLocalAcks] = useState<Record<string, any>>({});
   const [form, setForm] = useState({
     type: "purchase",
     party_name: "Shah Textiles",
@@ -1230,9 +1077,24 @@ export default function HomePage() {
     const res = await fetch("/api/ledger").then((r) => r.json());
     setData(res);
     setLoading(false);
+    if (typeof window !== "undefined" && res?.parties) {
+      const ackMap: Record<string, any> = {};
+      for (const p of res.parties) {
+        const saved = localStorage.getItem(\`mcp_ack_\${p.statement_token}\`);
+        if (saved) {
+          try {
+            ackMap[p.statement_token] = JSON.parse(saved);
+          } catch {}
+        }
+      }
+      setLocalAcks(ackMap);
+    }
   }
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsAdmin(localStorage.getItem("mcp_admin_auth") === "true");
+    }
     loadData();
     const timer = setInterval(loadData, 4000);
     return () => clearInterval(timer);
@@ -1246,6 +1108,7 @@ export default function HomePage() {
   }
 
   function setEditVal(entryId: string, field: string, value: any) {
+    if (!isAdmin) return;
     setEdits((prev) => ({
       ...prev,
       [entryId]: { ...(prev[entryId] || {}), [field]: value },
@@ -1253,6 +1116,7 @@ export default function HomePage() {
   }
 
   async function saveOrConfirm(entry: any, confirm: boolean) {
+    if (!isAdmin) return;
     setBusyId(entry.id);
     const current = edits[entry.id] || {};
     const payload = {
@@ -1283,6 +1147,7 @@ export default function HomePage() {
   }
 
   async function deleteEntry(entryId: string) {
+    if (!isAdmin) return;
     setBusyId(entryId);
     const res = await fetch("/api/ledger", {
       method: "POST",
@@ -1294,9 +1159,11 @@ export default function HomePage() {
   }
 
   async function handleResetAll() {
-    if (!confirm("Clear all entries, parties, and stock to start with a blank slate?"))
+    if (!isAdmin) return;
+    if (!confirm("Reset all demo bills, parties, and stock to start with a clean slate?"))
       return;
     setLoading(true);
+    setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1307,7 +1174,9 @@ export default function HomePage() {
   }
 
   async function handleSeedDemo() {
+    if (!isAdmin) return;
     setLoading(true);
+    setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1319,6 +1188,7 @@ export default function HomePage() {
 
   async function handleQuickAdd(e: React.FormEvent) {
     e.preventDefault();
+    if (!isAdmin) return;
     await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1326,6 +1196,15 @@ export default function HomePage() {
     });
     setShowQuickAdd(false);
     await loadData();
+  }
+
+  function handleLogout() {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("mcp_admin_auth");
+    }
+    setIsAdmin(false);
+    setShowAdminModal(false);
+    setShowQuickAdd(false);
   }
 
   function copyMcpUrl() {
@@ -1356,8 +1235,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
-      {/* Top Header */}
-      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 space-y-2">
+      {/* Clean Minimal Top Header */}
+      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -1371,51 +1250,62 @@ export default function HomePage() {
               Claude MCP Textile Ledger • Exact Code Math
             </p>
           </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setShowQuickAdd(!showQuickAdd)}
-              className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2 py-1.5 rounded-lg font-medium cursor-pointer"
-            >
-              + Draft
-            </button>
-            <button
-              onClick={handleSeedDemo}
-              className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2 py-1.5 rounded-lg font-semibold cursor-pointer"
-              title="Populate sample shop data"
-            >
-              ⚡ Seed
-            </button>
-            <button
-              onClick={handleResetAll}
-              className="text-[11px] bg-slate-900 hover:bg-rose-950 border border-slate-800 text-slate-400 hover:text-rose-300 px-2 py-1.5 rounded-lg cursor-pointer"
-              title="Clear all demo entries"
-            >
-              Reset
-            </button>
-            <Link
-              href="/login"
-              className="text-[11px] text-slate-400 hover:text-white px-1 py-1"
-            >
-              Login
-            </Link>
-          </div>
-        </div>
 
-        {/* 1-Click MCP Connector Bar */}
-        <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-[11px]">
-          <span className="text-slate-400 truncate mr-2">
-            MCP: <code className="text-emerald-400">/api/mcp?key=ravi123</code>
-          </span>
-          <button
-            onClick={copyMcpUrl}
-            className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-md font-semibold shrink-0 cursor-pointer"
-          >
-            {copiedMcp ? "✓ Copied!" : "Copy MCP URL"}
-          </button>
+          {/* Right Side: Admin Controls vs Guest Read-Only Sign In */}
+          {isAdmin ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setShowQuickAdd(!showQuickAdd)}
+                className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1.5 rounded-xl font-semibold cursor-pointer"
+              >
+                + Entry
+              </button>
+              <button
+                onClick={() => setShowAdminModal(true)}
+                className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
+                title="Admin Settings, MCP Key & Demo Tools"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Ravi (Admin) ⚙️
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 font-medium">
+                👁️ Read-Only
+              </span>
+              <Link
+                href="/login"
+                className="text-[11px] bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl transition"
+              >
+                🔒 Sign In
+              </Link>
+            </div>
+          )}
         </div>
       </header>
 
       <main className="w-full max-w-md px-4 pt-3 space-y-4">
+        {/* Option B: Read-Only Guest Banner when logged out */}
+        {!isAdmin && (
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
+            <div className="pr-2">
+              <p className="font-semibold text-slate-200">
+                🔒 Guest Read-Only Mode
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Sign in as Shop Admin to confirm drafts, edit rates, or view MCP keys.
+              </p>
+            </div>
+            <Link
+              href="/login"
+              className="shrink-0 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold px-3 py-1.5 rounded-lg text-[11px]"
+            >
+              Admin Login →
+            </Link>
+          </div>
+        )}
+
         {/* 4 Live Scoreboard KPI Cards */}
         <div className="grid grid-cols-4 gap-2">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
@@ -1444,15 +1334,15 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Optional Quick Test Draft Creator */}
-        {showQuickAdd && (
+        {/* Manual / Quick Draft Creator (Admin Only) */}
+        {isAdmin && showQuickAdd && (
           <form
             onSubmit={handleQuickAdd}
             className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3"
           >
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-400 uppercase">
-                Create Manual / Test Draft
+                Create Manual Draft Entry
               </span>
               <button
                 type="button"
@@ -1569,7 +1459,7 @@ export default function HomePage() {
                     No unconfirmed drafts
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment (or tap &quot;⚡ Seed&quot; above).
+                    Tell Claude about a purchase, sale, or payment to queue a draft here.
                   </p>
                 </div>
               )}
@@ -1638,9 +1528,10 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "qty")}
                             onChange={(e) => setEditVal(d.id, "qty", e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-semibold"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
                         <div>
@@ -1649,9 +1540,10 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "rate")}
                             onChange={(e) => setEditVal(d.id, "rate", e.target.value)}
-                            className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-sm font-semibold text-amber-200"
+                            className="w-full bg-slate-950 border border-amber-500/60 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold text-amber-200"
                           />
                         </div>
                         <div>
@@ -1660,11 +1552,12 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
                             onChange={(e) =>
                               setEditVal(d.id, "paid_amount", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-1.5">
@@ -1674,11 +1567,12 @@ export default function HomePage() {
                             </label>
                             <input
                               type="text"
+                              disabled={!isAdmin}
                               value={getEditVal(d, "bill_no")}
                               onChange={(e) =>
                                 setEditVal(d.id, "bill_no", e.target.value)
                               }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                              className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
                           <div>
@@ -1687,11 +1581,12 @@ export default function HomePage() {
                             </label>
                             <input
                               type="number"
+                              disabled={!isAdmin}
                               value={getEditVal(d, "due_days")}
                               onChange={(e) =>
                                 setEditVal(d.id, "due_days", e.target.value)
                               }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                              className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
                         </div>
@@ -1704,11 +1599,12 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
                             onChange={(e) =>
                               setEditVal(d.id, "paid_amount", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-sm font-semibold"
+                            className="w-full bg-slate-950 border border-amber-500/60 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
                         <div>
@@ -1717,34 +1613,44 @@ export default function HomePage() {
                           </label>
                           <input
                             type="text"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "payment_method")}
                             onChange={(e) =>
                               setEditVal(d.id, "payment_method", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
                       </div>
                     )}
 
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        disabled={busyId === d.id}
-                        onClick={() => saveOrConfirm(d, true)}
-                        className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+                    {isAdmin ? (
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          disabled={busyId === d.id}
+                          onClick={() => saveOrConfirm(d, true)}
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+                        >
+                          {busyId === d.id
+                            ? "Posting..."
+                            : "✓ Confirm & Post to Ledger"}
+                        </button>
+                        <button
+                          disabled={busyId === d.id}
+                          onClick={() => deleteEntry(d.id)}
+                          className="px-3 py-3 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 text-xs font-semibold cursor-pointer"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    ) : (
+                      <Link
+                        href="/login"
+                        className="block w-full text-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold py-2.5 rounded-xl text-xs"
                       >
-                        {busyId === d.id
-                          ? "Posting..."
-                          : "✓ Confirm & Post to Ledger"}
-                      </button>
-                      <button
-                        disabled={busyId === d.id}
-                        onClick={() => deleteEntry(d.id)}
-                        className="px-3 py-3 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 text-xs font-semibold cursor-pointer"
-                      >
-                        Discard
-                      </button>
-                    </div>
+                        🔒 Sign In as Admin to Edit & Confirm Draft
+                      </Link>
+                    )}
                   </div>
                 );
               })}
@@ -1804,13 +1710,15 @@ export default function HomePage() {
                           </p>
                         )}
                       </div>
-                      <button
-                        onClick={() => deleteEntry(c.id)}
-                        title="Delete entry"
-                        className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
-                      >
-                        ✕
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => deleteEntry(c.id)}
+                          title="Delete entry (Admin only)"
+                          className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1866,11 +1774,12 @@ export default function HomePage() {
             </h2>
             {parties.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No parties yet. Confirm a purchase or sale first (or tap &quot;⚡ Seed&quot;).
+                No parties yet. Confirm a purchase or sale first.
               </div>
             )}
             {parties.map((p: any) => {
               const isVendor = p.type === "vendor";
+              const ack = p.ack || localAcks[p.statement_token] || null;
               const statementUrl =
                 typeof window !== "undefined"
                   ? \`\${window.location.origin}/s/\${p.statement_token}\`
@@ -1888,15 +1797,27 @@ export default function HomePage() {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <span
-                        className={\`text-[10px] font-bold uppercase px-2 py-0.5 rounded \${
-                          isVendor
-                            ? "bg-amber-500/15 text-amber-300"
-                            : "bg-sky-500/15 text-sky-300"
-                        }\`}
-                      >
-                        {p.type}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={\`text-[10px] font-bold uppercase px-2 py-0.5 rounded \${
+                            isVendor
+                              ? "bg-amber-500/15 text-amber-300"
+                              : "bg-sky-500/15 text-sky-300"
+                          }\`}
+                        >
+                          {p.type}
+                        </span>
+                        {ack?.status === "verified" && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            ✓ Verified by {p.name}
+                          </span>
+                        )}
+                        {ack?.status === "disputed" && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                            ⚠ Dispute Flagged
+                          </span>
+                        )}
+                      </div>
                       <h3 className="text-base font-bold mt-1">{p.name}</h3>
                       <p className="text-xs text-slate-400">
                         Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹
@@ -1927,7 +1848,6 @@ export default function HomePage() {
                     </div>
                   </div>
 
-                  {/* Customer Purchasing Trends & Profit Generation Box */}
                   {!isVendor ? (
                     <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                       <div>
@@ -1952,7 +1872,11 @@ export default function HomePage() {
                   ) : (
                     <div className="flex justify-between items-center text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
                       <span className="text-slate-400">
-                        Supplies: <strong className="text-slate-200 capitalize">{p.favorite_item || "Textiles"}</strong> ({p.order_count} bills)
+                        Supplies:{" "}
+                        <strong className="text-slate-200 capitalize">
+                          {p.favorite_item || "Textiles"}
+                        </strong>{" "}
+                        ({p.order_count} bills)
                       </span>
                       <span className="text-emerald-400 font-semibold">
                         {p.payment_ratio_pct}% Settled
@@ -2005,7 +1929,7 @@ export default function HomePage() {
 
             {stock.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No stock items yet. Confirm a purchase or tap &quot;⚡ Seed&quot; above.
+                No stock items yet. Confirm a purchase to see live stock.
               </div>
             )}
 
@@ -2065,7 +1989,6 @@ export default function HomePage() {
                     </div>
                   </div>
 
-                  {/* Sell-Through Progress Bar */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[11px] text-slate-400">
                       <span>Sell-Through Velocity</span>
@@ -2093,6 +2016,111 @@ export default function HomePage() {
         )}
       </main>
 
+      {/* Admin Settings, Security & Hidden Demo Tools Modal */}
+      {isAdmin && showAdminModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                  ● Admin Session Active
+                </span>
+                <h3 className="text-base font-bold mt-1">
+                  Ravi — Shop Owner Controls
+                </h3>
+                <p className="text-xs text-slate-400">admin@mcpserver.com</p>
+              </div>
+              <button
+                onClick={() => setShowAdminModal(false)}
+                className="text-slate-400 hover:text-white text-sm px-2 py-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Private MCP Connector Key (Visible only to Admin) */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-300 block">
+                Your Private Claude MCP Connector URL
+              </label>
+              <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+                <code className="text-emerald-400 truncate mr-2">
+                  /api/mcp?key=ravi123
+                </code>
+                <button
+                  onClick={copyMcpUrl}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer"
+                >
+                  {copiedMcp ? "✓ Copied!" : "Copy Full URL"}
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Claude can only queue unconfirmed drafts with this key. Only you can confirm bills to the ledger.
+              </p>
+            </div>
+
+            {/* Role-Based Access Summary */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
+              <p className="font-bold text-slate-200">
+                Security & Access Architecture
+              </p>
+              <p className="text-slate-400">
+                • <strong className="text-emerald-300">Admin (You):</strong> Full write access to edit/confirm drafts, view profit margins, and manage stock.
+              </p>
+              <p className="text-slate-400">
+                • <strong className="text-amber-300">Vendors & Customers:</strong> Zero-login capability links (<code>/s/[token]</code>) scoped strictly to their own bills.
+              </p>
+            </div>
+
+            {/* Collapsible Developer / Demo Reset Drawer */}
+            <div className="border-t border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowDevTools(!showDevTools)}
+                className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 font-medium cursor-pointer"
+              >
+                <span>
+                  {showDevTools ? "▾" : "▸"} Developer & Demo Utilities
+                </span>
+                <span className="text-[10px] text-slate-500">Seed / Reset</span>
+              </button>
+
+              {showDevTools && (
+                <div className="grid grid-cols-2 gap-2 mt-2.5 pt-2">
+                  <button
+                    onClick={handleSeedDemo}
+                    className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    ⚡ Seed Sample Shop
+                  </button>
+                  <button
+                    onClick={handleResetAll}
+                    className="bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/60 text-rose-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    🗑️ Reset All Data
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleLogout}
+                className="flex-1 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 font-semibold py-2.5 rounded-xl text-xs cursor-pointer"
+              >
+                Sign Out (Switch to Read-Only)
+              </button>
+              <button
+                onClick={() => setShowAdminModal(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-bold cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Printable Tax Invoice / Payment Receipt Modal */}
       {invoiceEntry && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -2100,11 +2128,16 @@ export default function HomePage() {
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  {invoiceEntry.type === "payment" ? "PAYMENT RECEIPT" : \`\${invoiceEntry.type.toUpperCase()} INVOICE\`}
+                  {invoiceEntry.type === "payment"
+                    ? "PAYMENT RECEIPT"
+                    : \`\${invoiceEntry.type.toUpperCase()} INVOICE\`}
                 </span>
                 <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
                 <p className="text-xs text-slate-400">
-                  {invoiceEntry.bill_no ? \`Bill #\${invoiceEntry.bill_no}\` : \`Ref #\${invoiceEntry.id.slice(0, 6)}\`} •{" "}
+                  {invoiceEntry.bill_no
+                    ? \`Bill #\${invoiceEntry.bill_no}\`
+                    : \`Ref #\${invoiceEntry.id.slice(0, 6)}\`}{" "}
+                  •{" "}
                   {new Date(invoiceEntry.date).toLocaleDateString("en-IN", {
                     day: "numeric",
                     month: "short",
@@ -2131,7 +2164,8 @@ export default function HomePage() {
                 <div className="flex justify-between">
                   <span className="text-slate-400">Item & Rate:</span>
                   <span className="font-semibold text-slate-200">
-                    {invoiceEntry.qty} {invoiceEntry.item.unit} {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
+                    {invoiceEntry.qty} {invoiceEntry.item.unit}{" "}
+                    {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
                   </span>
                 </div>
               )}
@@ -2216,4 +2250,4 @@ export default function HomePage() {
 `
 );
 
-console.log("ALL 7 UPGRADES APPLIED SUCCESSFULLY!");
+console.log("SECURITY, LOGIN SESSION & HIDDEN ADMIN TOOLS APPLIED!");

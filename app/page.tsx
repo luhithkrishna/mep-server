@@ -6,12 +6,16 @@ export default function HomePage() {
   const [tab, setTab] = useState<"inbox" | "parties" | "stock">("inbox");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showDevTools, setShowDevTools] = useState(false);
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [copiedMcp, setCopiedMcp] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [invoiceEntry, setInvoiceEntry] = useState<any>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [localAcks, setLocalAcks] = useState<Record<string, any>>({});
   const [form, setForm] = useState({
     type: "purchase",
     party_name: "Shah Textiles",
@@ -28,9 +32,24 @@ export default function HomePage() {
     const res = await fetch("/api/ledger").then((r) => r.json());
     setData(res);
     setLoading(false);
+    if (typeof window !== "undefined" && res?.parties) {
+      const ackMap: Record<string, any> = {};
+      for (const p of res.parties) {
+        const saved = localStorage.getItem(`mcp_ack_${p.statement_token}`);
+        if (saved) {
+          try {
+            ackMap[p.statement_token] = JSON.parse(saved);
+          } catch {}
+        }
+      }
+      setLocalAcks(ackMap);
+    }
   }
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsAdmin(localStorage.getItem("mcp_admin_auth") === "true");
+    }
     loadData();
     const timer = setInterval(loadData, 4000);
     return () => clearInterval(timer);
@@ -44,6 +63,7 @@ export default function HomePage() {
   }
 
   function setEditVal(entryId: string, field: string, value: any) {
+    if (!isAdmin) return;
     setEdits((prev) => ({
       ...prev,
       [entryId]: { ...(prev[entryId] || {}), [field]: value },
@@ -51,6 +71,7 @@ export default function HomePage() {
   }
 
   async function saveOrConfirm(entry: any, confirm: boolean) {
+    if (!isAdmin) return;
     setBusyId(entry.id);
     const current = edits[entry.id] || {};
     const payload = {
@@ -81,6 +102,7 @@ export default function HomePage() {
   }
 
   async function deleteEntry(entryId: string) {
+    if (!isAdmin) return;
     setBusyId(entryId);
     const res = await fetch("/api/ledger", {
       method: "POST",
@@ -92,9 +114,11 @@ export default function HomePage() {
   }
 
   async function handleResetAll() {
-    if (!confirm("Clear all entries, parties, and stock to start with a blank slate?"))
+    if (!isAdmin) return;
+    if (!confirm("Reset all demo bills, parties, and stock to start with a clean slate?"))
       return;
     setLoading(true);
+    setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -105,7 +129,9 @@ export default function HomePage() {
   }
 
   async function handleSeedDemo() {
+    if (!isAdmin) return;
     setLoading(true);
+    setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -117,6 +143,7 @@ export default function HomePage() {
 
   async function handleQuickAdd(e: React.FormEvent) {
     e.preventDefault();
+    if (!isAdmin) return;
     await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -124,6 +151,15 @@ export default function HomePage() {
     });
     setShowQuickAdd(false);
     await loadData();
+  }
+
+  function handleLogout() {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("mcp_admin_auth");
+    }
+    setIsAdmin(false);
+    setShowAdminModal(false);
+    setShowQuickAdd(false);
   }
 
   function copyMcpUrl() {
@@ -154,8 +190,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
-      {/* Top Header */}
-      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 space-y-2">
+      {/* Clean Minimal Top Header */}
+      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -169,51 +205,62 @@ export default function HomePage() {
               Claude MCP Textile Ledger • Exact Code Math
             </p>
           </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setShowQuickAdd(!showQuickAdd)}
-              className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2 py-1.5 rounded-lg font-medium cursor-pointer"
-            >
-              + Draft
-            </button>
-            <button
-              onClick={handleSeedDemo}
-              className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2 py-1.5 rounded-lg font-semibold cursor-pointer"
-              title="Populate sample shop data"
-            >
-              ⚡ Seed
-            </button>
-            <button
-              onClick={handleResetAll}
-              className="text-[11px] bg-slate-900 hover:bg-rose-950 border border-slate-800 text-slate-400 hover:text-rose-300 px-2 py-1.5 rounded-lg cursor-pointer"
-              title="Clear all demo entries"
-            >
-              Reset
-            </button>
-            <Link
-              href="/login"
-              className="text-[11px] text-slate-400 hover:text-white px-1 py-1"
-            >
-              Login
-            </Link>
-          </div>
-        </div>
 
-        {/* 1-Click MCP Connector Bar */}
-        <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-[11px]">
-          <span className="text-slate-400 truncate mr-2">
-            MCP: <code className="text-emerald-400">/api/mcp?key=ravi123</code>
-          </span>
-          <button
-            onClick={copyMcpUrl}
-            className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-md font-semibold shrink-0 cursor-pointer"
-          >
-            {copiedMcp ? "✓ Copied!" : "Copy MCP URL"}
-          </button>
+          {/* Right Side: Admin Controls vs Guest Read-Only Sign In */}
+          {isAdmin ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setShowQuickAdd(!showQuickAdd)}
+                className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1.5 rounded-xl font-semibold cursor-pointer"
+              >
+                + Entry
+              </button>
+              <button
+                onClick={() => setShowAdminModal(true)}
+                className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
+                title="Admin Settings, MCP Key & Demo Tools"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Ravi (Admin) ⚙️
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 font-medium">
+                👁️ Read-Only
+              </span>
+              <Link
+                href="/login"
+                className="text-[11px] bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl transition"
+              >
+                🔒 Sign In
+              </Link>
+            </div>
+          )}
         </div>
       </header>
 
       <main className="w-full max-w-md px-4 pt-3 space-y-4">
+        {/* Option B: Read-Only Guest Banner when logged out */}
+        {!isAdmin && (
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
+            <div className="pr-2">
+              <p className="font-semibold text-slate-200">
+                🔒 Guest Read-Only Mode
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Sign in as Shop Admin to confirm drafts, edit rates, or view MCP keys.
+              </p>
+            </div>
+            <Link
+              href="/login"
+              className="shrink-0 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold px-3 py-1.5 rounded-lg text-[11px]"
+            >
+              Admin Login →
+            </Link>
+          </div>
+        )}
+
         {/* 4 Live Scoreboard KPI Cards */}
         <div className="grid grid-cols-4 gap-2">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
@@ -242,15 +289,15 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Optional Quick Test Draft Creator */}
-        {showQuickAdd && (
+        {/* Manual / Quick Draft Creator (Admin Only) */}
+        {isAdmin && showQuickAdd && (
           <form
             onSubmit={handleQuickAdd}
             className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3"
           >
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-400 uppercase">
-                Create Manual / Test Draft
+                Create Manual Draft Entry
               </span>
               <button
                 type="button"
@@ -367,7 +414,7 @@ export default function HomePage() {
                     No unconfirmed drafts
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment (or tap &quot;⚡ Seed&quot; above).
+                    Tell Claude about a purchase, sale, or payment to queue a draft here.
                   </p>
                 </div>
               )}
@@ -436,9 +483,10 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "qty")}
                             onChange={(e) => setEditVal(d.id, "qty", e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-semibold"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
                         <div>
@@ -447,9 +495,10 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "rate")}
                             onChange={(e) => setEditVal(d.id, "rate", e.target.value)}
-                            className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-sm font-semibold text-amber-200"
+                            className="w-full bg-slate-950 border border-amber-500/60 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold text-amber-200"
                           />
                         </div>
                         <div>
@@ -458,11 +507,12 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
                             onChange={(e) =>
                               setEditVal(d.id, "paid_amount", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-1.5">
@@ -472,11 +522,12 @@ export default function HomePage() {
                             </label>
                             <input
                               type="text"
+                              disabled={!isAdmin}
                               value={getEditVal(d, "bill_no")}
                               onChange={(e) =>
                                 setEditVal(d.id, "bill_no", e.target.value)
                               }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                              className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
                           <div>
@@ -485,11 +536,12 @@ export default function HomePage() {
                             </label>
                             <input
                               type="number"
+                              disabled={!isAdmin}
                               value={getEditVal(d, "due_days")}
                               onChange={(e) =>
                                 setEditVal(d.id, "due_days", e.target.value)
                               }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                              className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
                         </div>
@@ -502,11 +554,12 @@ export default function HomePage() {
                           </label>
                           <input
                             type="number"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
                             onChange={(e) =>
                               setEditVal(d.id, "paid_amount", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-sm font-semibold"
+                            className="w-full bg-slate-950 border border-amber-500/60 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
                         <div>
@@ -515,34 +568,44 @@ export default function HomePage() {
                           </label>
                           <input
                             type="text"
+                            disabled={!isAdmin}
                             value={getEditVal(d, "payment_method")}
                             onChange={(e) =>
                               setEditVal(d.id, "payment_method", e.target.value)
                             }
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
+                            className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
                       </div>
                     )}
 
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        disabled={busyId === d.id}
-                        onClick={() => saveOrConfirm(d, true)}
-                        className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+                    {isAdmin ? (
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          disabled={busyId === d.id}
+                          onClick={() => saveOrConfirm(d, true)}
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+                        >
+                          {busyId === d.id
+                            ? "Posting..."
+                            : "✓ Confirm & Post to Ledger"}
+                        </button>
+                        <button
+                          disabled={busyId === d.id}
+                          onClick={() => deleteEntry(d.id)}
+                          className="px-3 py-3 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 text-xs font-semibold cursor-pointer"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    ) : (
+                      <Link
+                        href="/login"
+                        className="block w-full text-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold py-2.5 rounded-xl text-xs"
                       >
-                        {busyId === d.id
-                          ? "Posting..."
-                          : "✓ Confirm & Post to Ledger"}
-                      </button>
-                      <button
-                        disabled={busyId === d.id}
-                        onClick={() => deleteEntry(d.id)}
-                        className="px-3 py-3 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 text-xs font-semibold cursor-pointer"
-                      >
-                        Discard
-                      </button>
-                    </div>
+                        🔒 Sign In as Admin to Edit & Confirm Draft
+                      </Link>
+                    )}
                   </div>
                 );
               })}
@@ -602,13 +665,15 @@ export default function HomePage() {
                           </p>
                         )}
                       </div>
-                      <button
-                        onClick={() => deleteEntry(c.id)}
-                        title="Delete entry"
-                        className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
-                      >
-                        ✕
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => deleteEntry(c.id)}
+                          title="Delete entry (Admin only)"
+                          className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -664,11 +729,12 @@ export default function HomePage() {
             </h2>
             {parties.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No parties yet. Confirm a purchase or sale first (or tap &quot;⚡ Seed&quot;).
+                No parties yet. Confirm a purchase or sale first.
               </div>
             )}
             {parties.map((p: any) => {
               const isVendor = p.type === "vendor";
+              const ack = p.ack || localAcks[p.statement_token] || null;
               const statementUrl =
                 typeof window !== "undefined"
                   ? `${window.location.origin}/s/${p.statement_token}`
@@ -686,15 +752,27 @@ export default function HomePage() {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <span
-                        className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                          isVendor
-                            ? "bg-amber-500/15 text-amber-300"
-                            : "bg-sky-500/15 text-sky-300"
-                        }`}
-                      >
-                        {p.type}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                            isVendor
+                              ? "bg-amber-500/15 text-amber-300"
+                              : "bg-sky-500/15 text-sky-300"
+                          }`}
+                        >
+                          {p.type}
+                        </span>
+                        {ack?.status === "verified" && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            ✓ Verified by {p.name}
+                          </span>
+                        )}
+                        {ack?.status === "disputed" && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                            ⚠ Dispute Flagged
+                          </span>
+                        )}
+                      </div>
                       <h3 className="text-base font-bold mt-1">{p.name}</h3>
                       <p className="text-xs text-slate-400">
                         Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹
@@ -725,7 +803,6 @@ export default function HomePage() {
                     </div>
                   </div>
 
-                  {/* Customer Purchasing Trends & Profit Generation Box */}
                   {!isVendor ? (
                     <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                       <div>
@@ -750,7 +827,11 @@ export default function HomePage() {
                   ) : (
                     <div className="flex justify-between items-center text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
                       <span className="text-slate-400">
-                        Supplies: <strong className="text-slate-200 capitalize">{p.favorite_item || "Textiles"}</strong> ({p.order_count} bills)
+                        Supplies:{" "}
+                        <strong className="text-slate-200 capitalize">
+                          {p.favorite_item || "Textiles"}
+                        </strong>{" "}
+                        ({p.order_count} bills)
                       </span>
                       <span className="text-emerald-400 font-semibold">
                         {p.payment_ratio_pct}% Settled
@@ -803,7 +884,7 @@ export default function HomePage() {
 
             {stock.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No stock items yet. Confirm a purchase or tap &quot;⚡ Seed&quot; above.
+                No stock items yet. Confirm a purchase to see live stock.
               </div>
             )}
 
@@ -863,7 +944,6 @@ export default function HomePage() {
                     </div>
                   </div>
 
-                  {/* Sell-Through Progress Bar */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[11px] text-slate-400">
                       <span>Sell-Through Velocity</span>
@@ -891,6 +971,111 @@ export default function HomePage() {
         )}
       </main>
 
+      {/* Admin Settings, Security & Hidden Demo Tools Modal */}
+      {isAdmin && showAdminModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                  ● Admin Session Active
+                </span>
+                <h3 className="text-base font-bold mt-1">
+                  Ravi — Shop Owner Controls
+                </h3>
+                <p className="text-xs text-slate-400">admin@mcpserver.com</p>
+              </div>
+              <button
+                onClick={() => setShowAdminModal(false)}
+                className="text-slate-400 hover:text-white text-sm px-2 py-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Private MCP Connector Key (Visible only to Admin) */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-300 block">
+                Your Private Claude MCP Connector URL
+              </label>
+              <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+                <code className="text-emerald-400 truncate mr-2">
+                  /api/mcp?key=ravi123
+                </code>
+                <button
+                  onClick={copyMcpUrl}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer"
+                >
+                  {copiedMcp ? "✓ Copied!" : "Copy Full URL"}
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Claude can only queue unconfirmed drafts with this key. Only you can confirm bills to the ledger.
+              </p>
+            </div>
+
+            {/* Role-Based Access Summary */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
+              <p className="font-bold text-slate-200">
+                Security & Access Architecture
+              </p>
+              <p className="text-slate-400">
+                • <strong className="text-emerald-300">Admin (You):</strong> Full write access to edit/confirm drafts, view profit margins, and manage stock.
+              </p>
+              <p className="text-slate-400">
+                • <strong className="text-amber-300">Vendors & Customers:</strong> Zero-login capability links (<code>/s/[token]</code>) scoped strictly to their own bills.
+              </p>
+            </div>
+
+            {/* Collapsible Developer / Demo Reset Drawer */}
+            <div className="border-t border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowDevTools(!showDevTools)}
+                className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 font-medium cursor-pointer"
+              >
+                <span>
+                  {showDevTools ? "▾" : "▸"} Developer & Demo Utilities
+                </span>
+                <span className="text-[10px] text-slate-500">Seed / Reset</span>
+              </button>
+
+              {showDevTools && (
+                <div className="grid grid-cols-2 gap-2 mt-2.5 pt-2">
+                  <button
+                    onClick={handleSeedDemo}
+                    className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    ⚡ Seed Sample Shop
+                  </button>
+                  <button
+                    onClick={handleResetAll}
+                    className="bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/60 text-rose-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
+                  >
+                    🗑️ Reset All Data
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleLogout}
+                className="flex-1 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 font-semibold py-2.5 rounded-xl text-xs cursor-pointer"
+              >
+                Sign Out (Switch to Read-Only)
+              </button>
+              <button
+                onClick={() => setShowAdminModal(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-bold cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Printable Tax Invoice / Payment Receipt Modal */}
       {invoiceEntry && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -898,11 +1083,16 @@ export default function HomePage() {
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  {invoiceEntry.type === "payment" ? "PAYMENT RECEIPT" : `${invoiceEntry.type.toUpperCase()} INVOICE`}
+                  {invoiceEntry.type === "payment"
+                    ? "PAYMENT RECEIPT"
+                    : `${invoiceEntry.type.toUpperCase()} INVOICE`}
                 </span>
                 <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
                 <p className="text-xs text-slate-400">
-                  {invoiceEntry.bill_no ? `Bill #${invoiceEntry.bill_no}` : `Ref #${invoiceEntry.id.slice(0, 6)}`} •{" "}
+                  {invoiceEntry.bill_no
+                    ? `Bill #${invoiceEntry.bill_no}`
+                    : `Ref #${invoiceEntry.id.slice(0, 6)}`}{" "}
+                  •{" "}
                   {new Date(invoiceEntry.date).toLocaleDateString("en-IN", {
                     day: "numeric",
                     month: "short",
@@ -929,7 +1119,8 @@ export default function HomePage() {
                 <div className="flex justify-between">
                   <span className="text-slate-400">Item & Rate:</span>
                   <span className="font-semibold text-slate-200">
-                    {invoiceEntry.qty} {invoiceEntry.item.unit} {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
+                    {invoiceEntry.qty} {invoiceEntry.item.unit}{" "}
+                    {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
                   </span>
                 </div>
               )}

@@ -5,6 +5,7 @@ import {
   getOrCreateParty,
   getOrCreateItem,
   computeLedgerState,
+  partyAcks,
 } from "@/lib/ledger";
 
 export async function GET(req: NextRequest) {
@@ -29,7 +30,10 @@ export async function GET(req: NextRequest) {
         .single();
       const state = await computeLedgerState(party.shop_id);
       const partySummary = state.parties.find((p: any) => p.id === party.id);
-      return NextResponse.json({ shop, party: partySummary });
+      return NextResponse.json({
+        shop: { name: shop?.name || "MCP Server" },
+        party: partySummary,
+      });
     }
 
     const shop = await getShop(searchParams.get("key"));
@@ -44,6 +48,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const sb = getSupabase();
+
+    if (body.action === "ack_statement") {
+      const { statement_token, status } = body;
+      if (statement_token && (status === "verified" || status === "disputed")) {
+        partyAcks.set(statement_token, {
+          status,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        });
+      }
+      return NextResponse.json({
+        ok: true,
+        ack: partyAcks.get(statement_token) || null,
+      });
+    }
+
     const shop = await getShop(body.key);
 
     if (body.action === "update_or_confirm") {
@@ -91,6 +110,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "reset_all") {
+      partyAcks.clear();
       await sb.from("entries").delete().eq("shop_id", shop.id);
       await sb.from("parties").delete().eq("shop_id", shop.id);
       await sb.from("items").delete().eq("shop_id", shop.id);
@@ -99,6 +119,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "seed_demo") {
+      partyAcks.clear();
       await sb.from("entries").delete().eq("shop_id", shop.id);
       await sb.from("parties").delete().eq("shop_id", shop.id);
       await sb.from("items").delete().eq("shop_id", shop.id);
@@ -112,7 +133,6 @@ export async function POST(req: NextRequest) {
 
       const due30 = new Date(Date.now() + 30 * 86400000).toISOString();
 
-      // 1. Confirmed Purchase: Shah Textiles (200m white cotton @ 310 = 62,000, bill 4521)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -133,7 +153,6 @@ export async function POST(req: NextRequest) {
         rate: 310,
       });
 
-      // 2. Confirmed Purchase (Deadstock item): Surat Silk Mills (50m red velvet @ 500 = 25,000, 0 sold)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -154,7 +173,6 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 3. Confirmed Sale: Kiran Boutique (10m white cotton @ 450 = 4,500, paid 2,000)
       const { data: e3 } = await sb
         .from("entries")
         .insert({
@@ -175,7 +193,6 @@ export async function POST(req: NextRequest) {
         rate: 450,
       });
 
-      // 4. Confirmed Payment: Paid Shah 25,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",

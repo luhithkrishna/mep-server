@@ -1,5 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 
+const globalAny = globalThis as any;
+if (!globalAny.__partyAcks) {
+  globalAny.__partyAcks = new Map<string, { status: "verified" | "disputed"; time: string }>();
+}
+export const partyAcks: Map<string, { status: "verified" | "disputed"; time: string }> =
+  globalAny.__partyAcks;
+
 export function getSupabase() {
   const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "")
     .trim()
@@ -55,7 +62,6 @@ export async function getOrCreateItem(shopId: string, name: string, unit = "m") 
   const cleanName = name.trim().toLowerCase();
   const { data: existing } = await sb
     .from("items")
-    .select("*")
     .select("*")
     .eq("shop_id", shopId)
     .ilike("name", cleanName)
@@ -254,6 +260,8 @@ export async function computeLedgerState(shopId: string) {
     const profitMarginPct =
       totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
 
+    const ack = partyAcks.get(party.statement_token) || null;
+
     return {
       ...party,
       total_billed: Number(totalBilled.toFixed(2)),
@@ -264,6 +272,7 @@ export async function computeLedgerState(shopId: string) {
       profit_margin_pct: profitMarginPct,
       payment_ratio_pct: paymentRatioPct,
       favorite_item: topItem,
+      ack,
       entries: pEntries,
     };
   });
