@@ -4,6 +4,8 @@ import Link from "next/link";
 
 export default function HomePage() {
   const [tab, setTab] = useState<"inbox" | "parties" | "stock" | "insights">("inbox");
+  const [inboxSubTab, setInboxSubTab] = useState<"all" | "sales" | "purchases" | "payments">("all");
+  const [partySubTab, setPartySubTab] = useState<"vendors" | "customers">("vendors");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -37,9 +39,7 @@ export default function HomePage() {
       for (const p of res.parties) {
         const saved = localStorage.getItem(`mcp_ack_${p.statement_token}`);
         if (saved) {
-          try {
-            ackMap[p.statement_token] = JSON.parse(saved);
-          } catch {}
+          try { ackMap[p.statement_token] = JSON.parse(saved); } catch {}
         }
       }
       setLocalAcks(ackMap);
@@ -79,17 +79,10 @@ export default function HomePage() {
       entry_id: entry.id,
       qty: current.qty !== undefined ? Number(current.qty) : entry.qty,
       rate: current.rate !== undefined ? Number(current.rate) : entry.rate,
-      paid_amount:
-        current.paid_amount !== undefined
-          ? Number(current.paid_amount)
-          : entry.paid_amount,
+      paid_amount: current.paid_amount !== undefined ? Number(current.paid_amount) : entry.paid_amount,
       bill_no: current.bill_no !== undefined ? current.bill_no : entry.bill_no,
-      due_days:
-        current.due_days !== undefined ? Number(current.due_days) : entry.due_days,
-      payment_method:
-        current.payment_method !== undefined
-          ? current.payment_method
-          : entry.payment_method,
+      due_days: current.due_days !== undefined ? Number(current.due_days) : entry.due_days,
+      payment_method: current.payment_method !== undefined ? current.payment_method : entry.payment_method,
       confirm,
     };
     const res = await fetch("/api/ledger", {
@@ -115,8 +108,7 @@ export default function HomePage() {
 
   async function handleResetAll() {
     if (!isAdmin) return;
-    if (!confirm("Reset all demo bills, parties, and stock to start with a clean slate?"))
-      return;
+    if (!confirm("Reset all demo bills, parties, and stock?")) return;
     setLoading(true);
     setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
@@ -154,9 +146,7 @@ export default function HomePage() {
   }
 
   function handleLogout() {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("mcp_admin_auth");
-    }
+    if (typeof window !== "undefined") localStorage.removeItem("mcp_admin_auth");
     setIsAdmin(false);
     setShowAdminModal(false);
     setShowQuickAdd(false);
@@ -184,24 +174,29 @@ export default function HomePage() {
     total_payables: 0,
     total_receivables: 0,
     total_stock_value: 0,
-    active_stock_value: 0,
     total_profit: 0,
-    cash_realized_profit: 0,
-    uncollected_profit: 0,
+    total_cash_collected: 0,
     deadstock_value: 0,
     coverage_ratio: 0,
   };
 
-  const customerParties = parties
-    .filter((p: any) => p.type === "customer")
-    .sort((a: any, b: any) => b.total_profit - a.total_profit);
-  const deadOrSlowStock = stock.filter(
-    (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
-  );
+  const vendorsList = parties.filter((p: any) => p.type === "vendor");
+  const customersList = parties.filter((p: any) => p.type === "customer").sort((a: any, b: any) => b.total_profit - a.total_profit);
+  const deadOrSlowStock = stock.filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING");
+
+  const filteredConfirmed = confirmed.filter((c: any) => {
+    if (inboxSubTab === "sales") return c.type === "sale";
+    if (inboxSubTab === "purchases") return c.type === "purchase";
+    if (inboxSubTab === "payments") return c.type === "payment";
+    return true;
+  });
+
+  const totalSalesRevenue = confirmed.filter((c: any) => c.type === "sale").reduce((acc: number, c: any) => acc + c.total_amount, 0);
+  const totalSalesProfit = confirmed.filter((c: any) => c.type === "sale").reduce((acc: number, c: any) => acc + c.profit, 0);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
-      {/* Clean Minimal Top Header */}
+      {/* Top Header */}
       <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3">
         <div className="flex items-center justify-between">
           <div>
@@ -228,7 +223,6 @@ export default function HomePage() {
               <button
                 onClick={() => setShowAdminModal(true)}
                 className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
-                title="Admin Settings, MCP Key & Demo Tools"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 Ravi (Admin) ⚙️
@@ -251,16 +245,11 @@ export default function HomePage() {
       </header>
 
       <main className="w-full max-w-md px-4 pt-3 space-y-4">
-        {/* Option B: Read-Only Guest Banner when logged out */}
         {!isAdmin && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
             <div className="pr-2">
-              <p className="font-semibold text-slate-200">
-                🔒 Guest Read-Only Mode
-              </p>
-              <p className="text-[11px] text-slate-400">
-                Sign in as Shop Admin to confirm drafts, edit rates, or view MCP keys.
-              </p>
+              <p className="font-semibold text-slate-200">🔒 Guest Read-Only Mode</p>
+              <p className="text-[11px] text-slate-400">Sign in as Admin to confirm drafts or manage shop keys.</p>
             </div>
             <Link
               href="/login"
@@ -271,7 +260,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* 4 Live Scoreboard KPI Cards */}
+        {/* 4 Scoreboard KPI Cards */}
         <div className="grid grid-cols-4 gap-2">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
             <p className="text-[10px] text-slate-400">You Owe</p>
@@ -299,25 +288,31 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Manual / Quick Draft Creator (Admin Only) */}
+        {/* Labeled Manual Entry Form */}
         {isAdmin && showQuickAdd && (
           <form
             onSubmit={handleQuickAdd}
-            className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3"
+            className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-4 space-y-3 shadow-xl"
           >
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-bold text-emerald-400 uppercase">
-                Create Manual Draft Entry
-              </span>
+            <div className="flex justify-between items-start">
+              <div>
+                <span className="text-xs font-bold text-emerald-400 uppercase block">
+                  Create Manual Draft Entry
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  Fill in the bill details below to queue a draft in your Inbox.
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowQuickAdd(false)}
-                className="text-xs text-slate-400"
+                className="text-xs text-slate-400 hover:text-white px-2 py-0.5 cursor-pointer"
               >
-                Close
+                Close ✕
               </button>
             </div>
-            <div className="grid grid-cols-3 gap-2">
+
+            <div className="grid grid-cols-3 gap-2 pt-1">
               {["purchase", "sale", "payment"].map((t) => (
                 <button
                   type="button"
@@ -329,11 +324,10 @@ export default function HomePage() {
                       party_name: t === "sale" ? "Kiran Boutique" : "Shah Textiles",
                       rate: t === "sale" ? "450" : "300",
                       qty: t === "sale" ? "10" : "200",
-                      paid_amount:
-                        t === "sale" ? "2000" : t === "payment" ? "25000" : "0",
+                      paid_amount: t === "sale" ? "2000" : t === "payment" ? "25000" : "0",
                     })
                   }
-                  className={`py-1.5 rounded-lg text-xs font-semibold uppercase border ${
+                  className={`py-1.5 rounded-lg text-xs font-semibold uppercase border cursor-pointer ${
                     form.type === t
                       ? "bg-emerald-500 text-slate-950 border-emerald-400"
                       : "bg-slate-800 text-slate-300 border-slate-700"
@@ -343,60 +337,135 @@ export default function HomePage() {
                 </button>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                placeholder="Party Name"
-                value={form.party_name}
-                onChange={(e) => setForm({ ...form, party_name: e.target.value })}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
-              />
-              {form.type !== "payment" && (
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                  {form.type === "sale" ? "Customer Name" : "Vendor / Party Name"}
+                </label>
                 <input
-                  placeholder="Item (white cotton)"
-                  value={form.item_name}
-                  onChange={(e) => setForm({ ...form, item_name: e.target.value })}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
+                  placeholder="e.g. Shah Textiles"
+                  value={form.party_name}
+                  onChange={(e) => setForm({ ...form, party_name: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
                 />
+              </div>
+
+              {form.type !== "payment" ? (
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                    Cloth / Item Name
+                  </label>
+                  <input
+                    placeholder="e.g. white cotton"
+                    value={form.item_name}
+                    onChange={(e) => setForm({ ...form, item_name: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                    Payment Method
+                  </label>
+                  <input
+                    placeholder="UPI / Cash / Bank"
+                    value={form.payment_method}
+                    onChange={(e) => setForm({ ...form, payment_method: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
+                  />
+                </div>
               )}
+
               {form.type !== "payment" && (
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                    Quantity (meters)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 200"
+                    value={form.qty}
+                    onChange={(e) => setForm({ ...form, qty: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
+                  />
+                </div>
+              )}
+
+              {form.type !== "payment" && (
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                    Rate per Meter (₹/m)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 300"
+                    value={form.rate}
+                    onChange={(e) => setForm({ ...form, rate: e.target.value })}
+                    className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-xs font-semibold text-amber-200"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                  {form.type === "payment" ? "Payment Amount (₹)" : "Paid Upfront Now (₹)"}
+                </label>
                 <input
                   type="number"
-                  placeholder="Qty (m)"
-                  value={form.qty}
-                  onChange={(e) => setForm({ ...form, qty: e.target.value })}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
+                  placeholder="0 if full credit"
+                  value={form.paid_amount}
+                  onChange={(e) => setForm({ ...form, paid_amount: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-emerald-300"
                 />
+              </div>
+
+              {form.type !== "payment" ? (
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                      Bill No.
+                    </label>
+                    <input
+                      placeholder="4521"
+                      value={form.bill_no}
+                      onChange={(e) => setForm({ ...form, bill_no: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                      Due (Days)
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="30"
+                      value={form.due_days}
+                      onChange={(e) => setForm({ ...form, due_days: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-white"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-medium">
+                    Reference / Bill No.
+                  </label>
+                  <input
+                    placeholder="Optional ref"
+                    value={form.bill_no}
+                    onChange={(e) => setForm({ ...form, bill_no: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                  />
+                </div>
               )}
-              {form.type !== "payment" && (
-                <input
-                  type="number"
-                  placeholder="Rate (₹/m)"
-                  value={form.rate}
-                  onChange={(e) => setForm({ ...form, rate: e.target.value })}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
-                />
-              )}
-              <input
-                type="number"
-                placeholder={
-                  form.type === "payment" ? "Payment Amount (₹)" : "Paid Now (₹)"
-                }
-                value={form.paid_amount}
-                onChange={(e) => setForm({ ...form, paid_amount: e.target.value })}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
-              />
-              <input
-                placeholder="Bill No. (e.g. 4521)"
-                value={form.bill_no}
-                onChange={(e) => setForm({ ...form, bill_no: e.target.value })}
-                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
-              />
             </div>
+
             <button
               type="submit"
-              className="w-full bg-emerald-500 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-2.5 rounded-xl text-xs cursor-pointer transition"
             >
-              Save Draft to Inbox
+              + Save Draft to Inbox
             </button>
           </form>
         )}
@@ -407,7 +476,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 1: INBOX */}
+        {/* TAB 1: INBOX WITH FILTER PILLS */}
         {!loading && tab === "inbox" && (
           <div className="space-y-5">
             <div className="space-y-3">
@@ -420,9 +489,7 @@ export default function HomePage() {
 
               {drafts.length === 0 && (
                 <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 text-center space-y-1">
-                  <p className="text-xs text-slate-300 font-medium">
-                    No unconfirmed drafts
-                  </p>
+                  <p className="text-xs text-slate-300 font-medium">No unconfirmed drafts</p>
                   <p className="text-[11px] text-slate-400">
                     Tell Claude about a purchase, sale, or payment to queue a draft here.
                   </p>
@@ -433,12 +500,8 @@ export default function HomePage() {
                 const editQty = Number(getEditVal(d, "qty")) || 0;
                 const editRate = Number(getEditVal(d, "rate")) || 0;
                 const editPaid = Number(getEditVal(d, "paid_amount")) || 0;
-                const liveTotal =
-                  d.type === "payment"
-                    ? editPaid
-                    : Number((editQty * editRate).toFixed(2));
-                const liveUnpaid =
-                  d.type === "payment" ? 0 : Number((liveTotal - editPaid).toFixed(2));
+                const liveTotal = d.type === "payment" ? editPaid : Number((editQty * editRate).toFixed(2));
+                const liveUnpaid = d.type === "payment" ? 0 : Number((liveTotal - editPaid).toFixed(2));
 
                 return (
                   <div
@@ -453,22 +516,14 @@ export default function HomePage() {
                           </span>
                           {d.due_date && (
                             <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-amber-200 border border-amber-500/30">
-                              Due:{" "}
-                              {new Date(d.due_date).toLocaleDateString("en-IN", {
-                                day: "numeric",
-                                month: "short",
-                              })}
+                              Due: {new Date(d.due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
                             </span>
                           )}
                         </div>
-                        <h3 className="text-base font-bold mt-1">
-                          {d.party?.name || "Unknown Party"}
-                        </h3>
+                        <h3 className="text-base font-bold mt-1">{d.party?.name || "Unknown Party"}</h3>
                         {d.item && (
                           <p className="text-xs text-slate-400">
-                            Item:{" "}
-                            <span className="text-slate-200">{d.item.name}</span> (
-                            {d.item.unit})
+                            Item: <span className="text-slate-200">{d.item.name}</span> ({d.item.unit})
                           </p>
                         )}
                       </div>
@@ -488,9 +543,7 @@ export default function HomePage() {
                     {d.type !== "payment" ? (
                       <div className="grid grid-cols-2 gap-2.5 pt-1">
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Quantity ({d.item?.unit || "m"})
-                          </label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Quantity ({d.item?.unit || "m"})</label>
                           <input
                             type="number"
                             disabled={!isAdmin}
@@ -500,9 +553,7 @@ export default function HomePage() {
                           />
                         </div>
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Rate (₹/{d.item?.unit || "m"})
-                          </label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Rate (₹/{d.item?.unit || "m"})</label>
                           <input
                             type="number"
                             disabled={!isAdmin}
@@ -512,45 +563,33 @@ export default function HomePage() {
                           />
                         </div>
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Paid Now (₹)
-                          </label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Paid Now (₹)</label>
                           <input
                             type="number"
                             disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
-                            onChange={(e) =>
-                              setEditVal(d.id, "paid_amount", e.target.value)
-                            }
+                            onChange={(e) => setEditVal(d.id, "paid_amount", e.target.value)}
                             className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-1.5">
                           <div>
-                            <label className="text-[11px] text-slate-400 block mb-1">
-                              Bill No.
-                            </label>
+                            <label className="text-[11px] text-slate-400 block mb-1">Bill No.</label>
                             <input
                               type="text"
                               disabled={!isAdmin}
                               value={getEditVal(d, "bill_no")}
-                              onChange={(e) =>
-                                setEditVal(d.id, "bill_no", e.target.value)
-                              }
+                              onChange={(e) => setEditVal(d.id, "bill_no", e.target.value)}
                               className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
                           <div>
-                            <label className="text-[11px] text-slate-400 block mb-1">
-                              Due (Days)
-                            </label>
+                            <label className="text-[11px] text-slate-400 block mb-1">Due (Days)</label>
                             <input
                               type="number"
                               disabled={!isAdmin}
                               value={getEditVal(d, "due_days")}
-                              onChange={(e) =>
-                                setEditVal(d.id, "due_days", e.target.value)
-                              }
+                              onChange={(e) => setEditVal(d.id, "due_days", e.target.value)}
                               className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-2.5 py-2 text-sm"
                             />
                           </div>
@@ -559,30 +598,22 @@ export default function HomePage() {
                     ) : (
                       <div className="grid grid-cols-2 gap-2.5 pt-1">
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Payment Amount (₹)
-                          </label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Payment Amount (₹)</label>
                           <input
                             type="number"
                             disabled={!isAdmin}
                             value={getEditVal(d, "paid_amount")}
-                            onChange={(e) =>
-                              setEditVal(d.id, "paid_amount", e.target.value)
-                            }
+                            onChange={(e) => setEditVal(d.id, "paid_amount", e.target.value)}
                             className="w-full bg-slate-950 border border-amber-500/60 disabled:opacity-60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
                         <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Method (UPI/Cash)
-                          </label>
+                          <label className="text-[11px] text-slate-400 block mb-1">Method (UPI/Cash)</label>
                           <input
                             type="text"
                             disabled={!isAdmin}
                             value={getEditVal(d, "payment_method")}
-                            onChange={(e) =>
-                              setEditVal(d.id, "payment_method", e.target.value)
-                            }
+                            onChange={(e) => setEditVal(d.id, "payment_method", e.target.value)}
                             className="w-full bg-slate-950 border border-slate-700 disabled:opacity-60 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
@@ -596,9 +627,7 @@ export default function HomePage() {
                           onClick={() => saveOrConfirm(d, true)}
                           className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
                         >
-                          {busyId === d.id
-                            ? "Posting..."
-                            : "✓ Confirm & Post to Ledger"}
+                          {busyId === d.id ? "Posting..." : "✓ Confirm & Post to Ledger"}
                         </button>
                         <button
                           disabled={busyId === d.id}
@@ -621,17 +650,73 @@ export default function HomePage() {
               })}
             </div>
 
-            {/* Confirmed Ledger History */}
+            {/* Confirmed Ledger History with Filter Pills */}
             <div className="space-y-3 pt-2">
-              <h2 className="text-sm font-bold text-slate-300">
-                Confirmed Ledger Entries ({confirmed.length})
-              </h2>
-              {confirmed.length === 0 && (
-                <p className="text-xs text-slate-500">
-                  Confirmed entries will appear here with exact stock, cost, and profit math.
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <h2 className="text-sm font-bold text-slate-300">
+                    Confirmed Ledger Entries ({filteredConfirmed.length})
+                  </h2>
+                </div>
+
+                {/* Filter Pills */}
+                <div className="grid grid-cols-4 gap-1.5 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+                  <button
+                    onClick={() => setInboxSubTab("all")}
+                    className={`py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      inboxSubTab === "all" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    All ({confirmed.length})
+                  </button>
+                  <button
+                    onClick={() => setInboxSubTab("sales")}
+                    className={`py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      inboxSubTab === "sales" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    Sales ({confirmed.filter((c: any) => c.type === "sale").length})
+                  </button>
+                  <button
+                    onClick={() => setInboxSubTab("purchases")}
+                    className={`py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      inboxSubTab === "purchases" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    Purchases ({confirmed.filter((c: any) => c.type === "purchase").length})
+                  </button>
+                  <button
+                    onClick={() => setInboxSubTab("payments")}
+                    className={`py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                      inboxSubTab === "payments" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    Payments ({confirmed.filter((c: any) => c.type === "payment").length})
+                  </button>
+                </div>
+
+                {/* Sales & Profit Sub-Header if Sales Filter Active */}
+                {inboxSubTab === "sales" && (
+                  <div className="bg-slate-900 border border-emerald-500/30 rounded-xl p-3 flex justify-between items-center text-xs">
+                    <div>
+                      <p className="text-slate-400">Total Filtered Sales Revenue</p>
+                      <p className="text-base font-extrabold text-white">₹{totalSalesRevenue.toLocaleString("en-IN")}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-slate-400">Total Profit Generated</p>
+                      <p className="text-base font-extrabold text-emerald-400">+₹{totalSalesProfit.toLocaleString("en-IN")}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {filteredConfirmed.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-4">
+                  No confirmed entries match this filter.
                 </p>
               )}
-              {confirmed.map((c: any) => (
+
+              {filteredConfirmed.map((c: any) => (
                 <div
                   key={c.id}
                   className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2.5"
@@ -642,18 +727,10 @@ export default function HomePage() {
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
                           CONFIRMED {c.type}
                         </span>
-                        {c.bill_no && (
-                          <span className="text-xs text-slate-400">
-                            Bill #{c.bill_no}
-                          </span>
-                        )}
+                        {c.bill_no && <span className="text-xs text-slate-400">Bill #{c.bill_no}</span>}
                         {c.due_date && c.unpaid_amount > 0 && (
                           <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-semibold">
-                            Due:{" "}
-                            {new Date(c.due_date).toLocaleDateString("en-IN", {
-                              day: "numeric",
-                              month: "short",
-                            })}
+                            Due: {new Date(c.due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
                           </span>
                         )}
                       </div>
@@ -666,19 +743,16 @@ export default function HomePage() {
                         </p>
                         {c.type !== "payment" ? (
                           <p className="text-[11px] text-slate-400">
-                            Paid: ₹{Number(c.paid_amount).toLocaleString("en-IN")} • Due: ₹
-                            {Number(c.unpaid_amount).toLocaleString("en-IN")}
+                            Paid: ₹{Number(c.paid_amount).toLocaleString("en-IN")} • Due: ₹{Number(c.unpaid_amount).toLocaleString("en-IN")}
                           </p>
                         ) : (
-                          <p className="text-[11px] text-emerald-400">
-                            via {c.payment_method || "UPI"}
-                          </p>
+                          <p className="text-[11px] text-emerald-400">via {c.payment_method || "UPI"}</p>
                         )}
                       </div>
                       {isAdmin && (
                         <button
                           onClick={() => deleteEntry(c.id)}
-                          title="Delete entry (Admin only)"
+                          title="Delete entry"
                           className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
                         >
                           ✕
@@ -689,41 +763,29 @@ export default function HomePage() {
 
                   {c.item && (
                     <p className="text-xs text-slate-300">
-                      {c.type === "purchase" ? "+" : "-"}
-                      {c.qty} {c.item.unit} {c.item.name} @ ₹{c.rate}/{c.item.unit}
+                      {c.type === "purchase" ? "+" : "-"}{c.qty} {c.item.unit} {c.item.name} @ ₹{c.rate}/{c.item.unit}
                     </p>
                   )}
 
                   {c.type === "sale" && (
                     <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                       <div>
-                        <span className="text-slate-400 block">Stock</span>
-                        <span className="font-bold text-rose-300">
-                          -{c.qty} {c.item?.unit || "m"}
-                        </span>
+                        <span className="text-slate-400 block">Stock Out</span>
+                        <span className="font-bold text-rose-300">-{c.qty} {c.item?.unit || "m"}</span>
                       </div>
                       <div>
                         <span className="text-slate-400 block">Avg Cost</span>
-                        <span className="font-bold text-slate-200">
-                          ₹{Number(c.cost).toLocaleString("en-IN")}
-                        </span>
+                        <span className="font-bold text-slate-200">₹{Number(c.cost).toLocaleString("en-IN")}</span>
                       </div>
                       <div>
                         <span className="text-slate-400 block">Booked Profit</span>
-                        <span className="font-bold text-emerald-400">
-                          +₹{Number(c.profit).toLocaleString("en-IN")}
-                        </span>
+                        <span className="font-bold text-emerald-400">+₹{Number(c.profit).toLocaleString("en-IN")}</span>
                       </div>
                     </div>
                   )}
 
                   <div className="pt-1 flex justify-between items-center text-[11px] text-slate-500">
-                    <span>
-                      {new Date(c.date).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                      })}
-                    </span>
+                    <span>{new Date(c.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>
                     <button
                       onClick={() => setInvoiceEntry(c)}
                       className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-lg font-medium cursor-pointer"
@@ -737,178 +799,211 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 2: PARTIES & LIVE STATEMENT LINKS */}
+        {/* TAB 2: PARTIES WITH VENDORS VS CUSTOMERS SUB-TABS */}
         {!loading && tab === "parties" && (
           <div className="space-y-3">
-            <h2 className="text-sm font-bold text-slate-200">
-              Vendor Credits & Customer Balances ({parties.length})
-            </h2>
-            {parties.length === 0 && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No parties yet. Confirm a purchase or sale first.
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-200">Party Balances</h2>
+            </div>
+
+            {/* Vendor vs Customer Sub-Toggles */}
+            <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+              <button
+                onClick={() => setPartySubTab("vendors")}
+                className={`py-2 rounded-lg text-xs font-bold cursor-pointer ${
+                  partySubTab === "vendors" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                📦 Vendors You Owe ({vendorsList.length})
+              </button>
+              <button
+                onClick={() => setPartySubTab("customers")}
+                className={`py-2 rounded-lg text-xs font-bold cursor-pointer ${
+                  partySubTab === "customers" ? "bg-sky-500 text-slate-950" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                🛍️ Customers Who Owe ({customersList.length})
+              </button>
+            </div>
+
+            {partySubTab === "vendors" ? (
+              <div className="space-y-3 pt-1">
+                {vendorsList.length === 0 && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
+                    No vendor credits. All supplier bills are fully settled!
+                  </div>
+                )}
+                {vendorsList.map((p: any) => {
+                  const ack = p.ack || localAcks[p.statement_token] || null;
+                  const statementUrl = typeof window !== "undefined" ? `${window.location.origin}/s/${p.statement_token}` : `/s/${p.statement_token}`;
+                  const waText = encodeURIComponent(`Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(p.balance).toLocaleString("en-IN")}): ${statementUrl}`);
+
+                  return (
+                    <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                              VENDOR
+                            </span>
+                            {ack?.status === "verified" && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                ✓ Verified by {p.name}
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="text-base font-bold mt-1">{p.name}</h3>
+                          <p className="text-xs text-slate-400">
+                            Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹{Number(p.total_paid).toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[11px] text-slate-400">{p.balance === 0 ? "Status" : "You Owe (Payable)"}</p>
+                          {p.balance === 0 ? (
+                            <p className="text-sm font-extrabold text-emerald-400 mt-0.5">✓ Settled (₹0)</p>
+                          ) : (
+                            <p className="text-xl font-extrabold text-amber-400">₹{Number(p.balance).toLocaleString("en-IN")}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
+                        <span className="text-slate-400">
+                          Supplies: <strong className="text-slate-200 capitalize">{p.favorite_item || "Textiles"}</strong> ({p.order_count} bills)
+                        </span>
+                        <span className="text-emerald-400 font-semibold">{p.payment_ratio_pct}% Settled</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <Link
+                          href={`/s/${p.statement_token}`}
+                          target="_blank"
+                          className="text-center bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold py-2 rounded-xl text-xs"
+                        >
+                          Open Live ↗
+                        </Link>
+                        <button
+                          onClick={() => copyStatementUrl(p.statement_token)}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 rounded-xl text-xs cursor-pointer"
+                        >
+                          {copiedToken === p.statement_token ? "✓ Copied" : "Copy Link"}
+                        </button>
+                        <a
+                          href={`https://wa.me/?text=${waText}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-center bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-semibold py-2 rounded-xl text-xs"
+                        >
+                          WhatsApp
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="space-y-3 pt-1">
+                {customersList.length === 0 && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
+                    No customer sales recorded yet.
+                  </div>
+                )}
+                {customersList.map((p: any) => {
+                  const ack = p.ack || localAcks[p.statement_token] || null;
+                  const statementUrl = typeof window !== "undefined" ? `${window.location.origin}/s/${p.statement_token}` : `/s/${p.statement_token}`;
+                  const waText = encodeURIComponent(`Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(p.balance).toLocaleString("en-IN")}): ${statementUrl}`);
+
+                  return (
+                    <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-sky-500/15 text-sky-300">
+                              CUSTOMER
+                            </span>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                p.customer_tier === "VIP Cash Buyer"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : p.customer_tier === "High-Margin Credit"
+                                  ? "bg-amber-500/15 text-amber-300"
+                                  : "bg-rose-500/15 text-rose-300"
+                              }`}
+                            >
+                              {p.customer_tier}
+                            </span>
+                            {ack?.status === "verified" && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                ✓ Verified by {p.name}
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="text-base font-bold mt-1">{p.name}</h3>
+                          <p className="text-xs text-slate-400">
+                            Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹{Number(p.total_paid).toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[11px] text-slate-400">{p.balance === 0 ? "Status" : "Owes You (Receivable)"}</p>
+                          {p.balance === 0 ? (
+                            <p className="text-sm font-extrabold text-emerald-400 mt-0.5">✓ Settled (₹0)</p>
+                          ) : (
+                            <p className="text-xl font-extrabold text-sky-400">₹{Number(p.balance).toLocaleString("en-IN")}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                        <div>
+                          <span className="text-slate-400 block">Booked Profit</span>
+                          <span className="font-bold text-emerald-400">+₹{Number(p.total_profit).toLocaleString("en-IN")} ({p.profit_margin_pct}%)</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Avg Rate Paid</span>
+                          <span className="font-bold text-sky-300">₹{p.avg_rate_paid}/m</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Credit Risk</span>
+                          <span className="font-bold text-slate-200">{p.payment_ratio_pct}% Paid</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <Link
+                          href={`/s/${p.statement_token}`}
+                          target="_blank"
+                          className="text-center bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold py-2 rounded-xl text-xs"
+                        >
+                          Open Live ↗
+                        </Link>
+                        <button
+                          onClick={() => copyStatementUrl(p.statement_token)}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 rounded-xl text-xs cursor-pointer"
+                        >
+                          {copiedToken === p.statement_token ? "✓ Copied" : "Copy Link"}
+                        </button>
+                        <a
+                          href={`https://wa.me/?text=${waText}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-center bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-semibold py-2 rounded-xl text-xs"
+                        >
+                          WhatsApp
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
-            {parties.map((p: any) => {
-              const isVendor = p.type === "vendor";
-              const ack = p.ack || localAcks[p.statement_token] || null;
-              const statementUrl =
-                typeof window !== "undefined"
-                  ? `${window.location.origin}/s/${p.statement_token}`
-                  : `/s/${p.statement_token}`;
-              const waText = encodeURIComponent(
-                `Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(
-                  p.balance
-                ).toLocaleString("en-IN")}): ${statementUrl}`
-              );
-
-              return (
-                <div
-                  key={p.id}
-                  className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3"
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span
-                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                            isVendor
-                              ? "bg-amber-500/15 text-amber-300"
-                              : "bg-sky-500/15 text-sky-300"
-                          }`}
-                        >
-                          {p.type}
-                        </span>
-                        {!isVendor && p.customer_tier !== "New" && (
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                              p.customer_tier === "VIP Cash Buyer"
-                                ? "bg-emerald-500/15 text-emerald-300"
-                                : p.customer_tier === "High-Margin Credit"
-                                ? "bg-amber-500/15 text-amber-300"
-                                : "bg-rose-500/15 text-rose-300"
-                            }`}
-                          >
-                            {p.customer_tier}
-                          </span>
-                        )}
-                        {ack?.status === "verified" && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                            ✓ Verified by {p.name}
-                          </span>
-                        )}
-                        {ack?.status === "disputed" && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">
-                            ⚠ Dispute Flagged
-                          </span>
-                        )}
-                      </div>
-                      <h3 className="text-base font-bold mt-1">{p.name}</h3>
-                      <p className="text-xs text-slate-400">
-                        Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹
-                        {Number(p.total_paid).toLocaleString("en-IN")}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[11px] text-slate-400">
-                        {p.balance === 0
-                          ? "Status"
-                          : isVendor
-                          ? "You Owe (Payable)"
-                          : "Owes You (Receivable)"}
-                      </p>
-                      {p.balance === 0 ? (
-                        <p className="text-sm font-extrabold text-emerald-400 mt-0.5">
-                          ✓ Settled (₹0)
-                        </p>
-                      ) : (
-                        <p
-                          className={`text-xl font-extrabold ${
-                            isVendor ? "text-amber-400" : "text-sky-400"
-                          }`}
-                        >
-                          ₹{Number(p.balance).toLocaleString("en-IN")}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {!isVendor ? (
-                    <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                      <div>
-                        <span className="text-slate-400 block">Booked Profit</span>
-                        <span className="font-bold text-emerald-400">
-                          +₹{Number(p.total_profit).toLocaleString("en-IN")} ({p.profit_margin_pct}%)
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block">Cash Profit</span>
-                        <span
-                          className={`font-bold ${
-                            p.cash_realized_profit >= 0 ? "text-emerald-300" : "text-amber-300"
-                          }`}
-                        >
-                          {p.cash_realized_profit >= 0 ? "+" : ""}₹
-                          {Number(p.cash_realized_profit).toLocaleString("en-IN")}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block">Avg Rate Paid</span>
-                        <span className="font-bold text-sky-300">
-                          ₹{p.avg_rate_paid}/m ({p.payment_ratio_pct}% paid)
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex justify-between items-center text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
-                      <span className="text-slate-400">
-                        Supplies:{" "}
-                        <strong className="text-slate-200 capitalize">
-                          {p.favorite_item || "Textiles"}
-                        </strong>{" "}
-                        ({p.order_count} bills)
-                      </span>
-                      <span className="text-emerald-400 font-semibold">
-                        {p.payment_ratio_pct}% Settled
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <Link
-                      href={`/s/${p.statement_token}`}
-                      target="_blank"
-                      className="text-center bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold py-2 rounded-xl text-xs"
-                    >
-                      Open Live ↗
-                    </Link>
-                    <button
-                      onClick={() => copyStatementUrl(p.statement_token)}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 rounded-xl text-xs cursor-pointer"
-                    >
-                      {copiedToken === p.statement_token ? "✓ Copied" : "Copy Link"}
-                    </button>
-                    <a
-                      href={`https://wa.me/?text=${waText}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-center bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-semibold py-2 rounded-xl text-xs"
-                    >
-                      WhatsApp
-                    </a>
-                  </div>
-                </div>
-              );
-            })}
           </div>
         )}
 
-        {/* TAB 3: STOCK & WEIGHTED-AVERAGE COST */}
+        {/* TAB 3: STOCK & DEADSTOCK RADAR */}
         {!loading && tab === "stock" && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-200">
-                Stock, Avg Cost & Velocity ({stock.length})
-              </h2>
+              <h2 className="text-sm font-bold text-slate-200">Stock & Velocity ({stock.length})</h2>
               {kpis.deadstock_value > 0 && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
                   At-Risk: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
@@ -918,7 +1013,7 @@ export default function HomePage() {
 
             {stock.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No stock items yet. Confirm a purchase to see live stock.
+                No stock items yet. Confirm a purchase first.
               </div>
             )}
 
@@ -930,11 +1025,7 @@ export default function HomePage() {
                 <div
                   key={s.item_id}
                   className={`bg-slate-900 border rounded-2xl p-4 space-y-3 ${
-                    isDead
-                      ? "border-rose-500/50"
-                      : isSlow
-                      ? "border-amber-500/40"
-                      : "border-slate-800"
+                    isDead ? "border-rose-500/50" : isSlow ? "border-amber-500/40" : "border-slate-800"
                   }`}
                 >
                   <div className="flex justify-between items-start">
@@ -958,45 +1049,29 @@ export default function HomePage() {
                         )}
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit} •{" "}
-                        {s.locked_share_pct}% of shop capital
+                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit} • {s.locked_share_pct}% of capital
                       </p>
                       <p className="text-xs text-emerald-400 font-semibold mt-0.5">
                         Weighted-Avg Cost: ₹{s.avg_cost}/{s.unit}
-                        {s.avg_selling_rate > 0
-                          ? ` • Avg Sell Rate: ₹${s.avg_selling_rate}/${s.unit}`
-                          : ""}
+                        {s.avg_selling_rate > 0 ? ` • Avg Sell Rate: ₹${s.avg_selling_rate}/${s.unit}` : ""}
                       </p>
                     </div>
                     <div className="text-right">
                       <p className="text-2xl font-extrabold text-white">
-                        {s.stock_qty}{" "}
-                        <span className="text-sm font-normal text-slate-400">
-                          {s.unit}
-                        </span>
+                        {s.stock_qty} <span className="text-sm font-normal text-slate-400">{s.unit}</span>
                       </p>
-                      <p className="text-[11px] text-slate-400">
-                        Locked: ₹{Number(s.stock_value).toLocaleString("en-IN")}
-                      </p>
+                      <p className="text-[11px] text-slate-400">Locked: ₹{Number(s.stock_value).toLocaleString("en-IN")}</p>
                     </div>
                   </div>
 
                   <div className="space-y-1">
                     <div className="flex justify-between text-[11px] text-slate-400">
                       <span>Sell-Through Velocity</span>
-                      <span className="font-semibold text-slate-200">
-                        {s.sell_through_pct}% Sold
-                      </span>
+                      <span className="font-semibold text-slate-200">{s.sell_through_pct}% Sold</span>
                     </div>
                     <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
                       <div
-                        className={`h-full transition-all ${
-                          isDead
-                            ? "bg-rose-500"
-                            : isSlow
-                            ? "bg-amber-400"
-                            : "bg-emerald-400"
-                        }`}
+                        className={`h-full transition-all ${isDead ? "bg-rose-500" : isSlow ? "bg-amber-400" : "bg-emerald-400"}`}
                         style={{ width: `${Math.max(4, s.sell_through_pct)}%` }}
                       />
                     </div>
@@ -1007,88 +1082,48 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 4: BUSINESS INSIGHTS (100% DETERMINISTIC CODE MATH) */}
+        {/* TAB 4: INSIGHTS (CLEAN BOOKED PROFIT & CASH COLLECTED) */}
         {!loading && tab === "insights" && (
           <div className="space-y-4">
-            {/* Section 1: Booked Profit vs Cash-Realized Profit & Working Capital */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-emerald-400">
-                  1. Cash vs. Paper Profit & Working Capital
-                </h2>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
-                  Udhaar Risk Check
-                </span>
+                <h2 className="text-sm font-bold text-emerald-400">1. Profit & Cash Collection Overview</h2>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">Udhaar Health</span>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                  <p className="text-[11px] text-slate-400">Booked Profit (Paper)</p>
+                  <p className="text-[11px] text-slate-400">Total Booked Profit</p>
                   <p className="text-lg font-extrabold text-emerald-400 mt-0.5">
                     +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
                   </p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    Includes uncollected credit bills
-                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Exact profit earned on sales</p>
                 </div>
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
-                  <p className="text-[11px] text-slate-400">Cash-Realized Profit</p>
-                  <p
-                    className={`text-lg font-extrabold mt-0.5 ${
-                      kpis.cash_realized_profit >= 0
-                        ? "text-emerald-300"
-                        : "text-amber-400"
-                    }`}
-                  >
-                    {kpis.cash_realized_profit >= 0 ? "+" : ""}₹
-                    {Number(kpis.cash_realized_profit).toLocaleString("en-IN")}
+                  <p className="text-[11px] text-slate-400">Cash Collected in Bank/Hand</p>
+                  <p className="text-lg font-extrabold text-sky-400 mt-0.5">
+                    ₹{Number(kpis.total_cash_collected).toLocaleString("en-IN")}
                   </p>
-                  <p className="text-[10px] text-amber-300/90 mt-0.5">
-                    ₹{Number(kpis.uncollected_profit).toLocaleString("en-IN")} stuck in customer dues
-                  </p>
-                </div>
-              </div>
-
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between text-xs">
-                <div>
-                  <p className="font-semibold text-slate-200">
-                    Payables Coverage Ratio:{" "}
-                    <span className="text-emerald-400 font-extrabold">
-                      {kpis.coverage_ratio === 99 ? "∞" : `${kpis.coverage_ratio}x`}
-                    </span>
-                  </p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Liquid Assets (Receivables ₹
-                    {Number(kpis.total_receivables).toLocaleString("en-IN")} + Fast Stock ₹
-                    {Number(kpis.active_stock_value).toLocaleString("en-IN")}) vs Vendor Dues ₹
-                    {Number(kpis.total_payables).toLocaleString("en-IN")}
+                  <p className="text-[10px] text-sky-300/90 mt-0.5">
+                    ₹{Number(kpis.total_receivables).toLocaleString("en-IN")} pending in customer udhaar
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Section 2: Customer Buying & Price Realization Matrix */}
+            {/* Customer Buying & Pricing Matrix */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-sky-400">
-                  2. Customer Buying & Pricing Matrix
-                </h2>
-                <span className="text-[10px] text-slate-400">
-                  Volume vs. Margin/m
-                </span>
+                <h2 className="text-sm font-bold text-sky-400">2. Customer Buying & Pricing Matrix</h2>
+                <span className="text-[10px] text-slate-400">Volume vs. Margin/m</span>
               </div>
 
-              {customerParties.length === 0 ? (
-                <p className="text-xs text-slate-400">
-                  No customer sales confirmed yet. Tap &quot;Ravi (Admin) ⚙️ → Seed Sample Shop&quot; to test.
-                </p>
+              {customersList.length === 0 ? (
+                <p className="text-xs text-slate-400">No customer sales confirmed yet.</p>
               ) : (
                 <div className="space-y-2.5">
-                  {customerParties.map((c: any) => (
-                    <div
-                      key={c.id}
-                      className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2"
-                    >
+                  {customersList.map((c: any) => (
+                    <div key={c.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="flex items-center gap-1.5">
@@ -1106,49 +1141,27 @@ export default function HomePage() {
                             </span>
                           </div>
                           <p className="text-[11px] text-slate-400 mt-0.5">
-                            Buys:{" "}
-                            <strong className="text-slate-200 capitalize">
-                              {c.total_qty} m {c.favorite_item || "cloth"}
-                            </strong>{" "}
-                            • AOV: ₹{Number(c.aov).toLocaleString("en-IN")}
+                            Buys: <strong className="text-slate-200 capitalize">{c.total_qty} m {c.favorite_item || "cloth"}</strong> • AOV: ₹{Number(c.aov).toLocaleString("en-IN")}
                           </p>
                         </div>
                         <div className="text-right">
-                          <span className="text-xs font-extrabold text-sky-300">
-                            Pays ₹{c.avg_rate_paid}/m
-                          </span>
-                          <p className="text-[10px] text-slate-400">
-                            Margin: {c.profit_margin_pct}%
-                          </p>
+                          <span className="text-xs font-extrabold text-sky-300">Pays ₹{c.avg_rate_paid}/m</span>
+                          <p className="text-[10px] text-slate-400">Margin: {c.profit_margin_pct}%</p>
                         </div>
                       </div>
 
                       <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
                         <div>
                           <span className="text-slate-400 block">Booked Profit</span>
-                          <span className="font-bold text-emerald-400">
-                            +₹{Number(c.total_profit).toLocaleString("en-IN")}
-                          </span>
+                          <span className="font-bold text-emerald-400">+₹{Number(c.total_profit).toLocaleString("en-IN")}</span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Cash Profit</span>
-                          <span
-                            className={`font-bold ${
-                              c.cash_realized_profit >= 0
-                                ? "text-emerald-300"
-                                : "text-amber-300"
-                            }`}
-                          >
-                            {c.cash_realized_profit >= 0 ? "+" : ""}₹
-                            {Number(c.cash_realized_profit).toLocaleString("en-IN")}
-                          </span>
+                          <span className="text-slate-400 block">Total Paid</span>
+                          <span className="font-bold text-sky-300">₹{Number(c.total_paid).toLocaleString("en-IN")}</span>
                         </div>
                         <div>
-                          <span className="text-slate-400 block">Credit Risk</span>
-                          <span className="font-bold text-slate-200">
-                            {c.payment_ratio_pct}% Paid (Owes ₹
-                            {Number(c.balance).toLocaleString("en-IN")})
-                          </span>
+                          <span className="text-slate-400 block">Pending Udhaar</span>
+                          <span className="font-bold text-amber-400">₹{Number(c.balance).toLocaleString("en-IN")}</span>
                         </div>
                       </div>
                     </div>
@@ -1157,69 +1170,43 @@ export default function HomePage() {
               )}
             </div>
 
-            {/* Section 3: Actionable Deadstock Liquidation Simulator */}
+            {/* Deadstock Clearance Plan */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-rose-400">
-                  3. Deadstock Liquidation & Capital Unlock
-                </h2>
-                <span className="text-[10px] text-slate-400">
-                  Break-Even Simulator
-                </span>
+                <h2 className="text-sm font-bold text-rose-400">3. Deadstock Liquidation & Capital Unlock</h2>
+                <span className="text-[10px] text-slate-400">Break-Even Simulator</span>
               </div>
 
               {deadOrSlowStock.length === 0 ? (
-                <p className="text-xs text-emerald-400">
-                  ✓ Zero deadstock! All cloth items have healthy sell-through velocity.
-                </p>
+                <p className="text-xs text-emerald-400">✓ Zero deadstock! All cloth items have healthy sell-through velocity.</p>
               ) : (
                 <div className="space-y-2.5">
                   {deadOrSlowStock.map((s: any) => (
-                    <div
-                      key={s.item_id}
-                      className="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2"
-                    >
+                    <div key={s.item_id} className="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="flex items-center gap-1.5">
-                            <h3 className="text-sm font-bold capitalize text-white">
-                              {s.name}
-                            </h3>
+                            <h3 className="text-sm font-bold capitalize text-white">{s.name}</h3>
                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">
                               {s.age_days} Days Unsold
                             </span>
                           </div>
                           <p className="text-[11px] text-slate-400 mt-0.5">
-                            {s.stock_qty} {s.unit} sitting idle •{" "}
-                            <strong className="text-rose-300">
-                              {s.locked_share_pct}% of total inventory cash
-                            </strong>
+                            {s.stock_qty} {s.unit} sitting idle • <strong className="text-rose-300">{s.locked_share_pct}% of shop capital</strong>
                           </p>
                         </div>
                         <div className="text-right">
-                          <p className="text-sm font-extrabold text-rose-400">
-                            ₹{Number(s.stock_value).toLocaleString("en-IN")}
-                          </p>
+                          <p className="text-sm font-extrabold text-rose-400">₹{Number(s.stock_value).toLocaleString("en-IN")}</p>
                           <p className="text-[10px] text-slate-400">Locked Capital</p>
                         </div>
                       </div>
 
                       <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-[11px] space-y-1">
                         <p className="text-slate-300">
-                          • <strong className="text-emerald-300">Break-Even Clearance:</strong>{" "}
-                          Sell at <strong>₹{s.clearance_breakeven_rate}/{s.unit}</strong> to recover{" "}
-                          <strong>₹{Number(s.stock_value).toLocaleString("en-IN")}</strong> (0% loss).
+                          • <strong className="text-emerald-300">Break-Even Clearance:</strong> Sell at <strong>₹{s.clearance_breakeven_rate}/{s.unit}</strong> to recover <strong>₹{Number(s.stock_value).toLocaleString("en-IN")}</strong>.
                         </p>
                         <p className="text-slate-400">
-                          • <strong className="text-amber-300">Fast 10% Markdown:</strong>{" "}
-                          Sell at <strong>₹{s.clearance_10pct_rate}/{s.unit}</strong> to immediately unlock{" "}
-                          <strong>
-                            ₹
-                            {Math.round(
-                              s.stock_qty * s.clearance_10pct_rate
-                            ).toLocaleString("en-IN")}
-                          </strong>{" "}
-                          cash to pay vendors.
+                          • <strong className="text-amber-300">Fast 10% Markdown:</strong> Sell at <strong>₹{s.clearance_10pct_rate}/{s.unit}</strong> to immediately unlock <strong>₹{Math.round(s.stock_qty * s.clearance_10pct_rate).toLocaleString("en-IN")}</strong> cash.
                         </p>
                       </div>
                     </div>
@@ -1231,7 +1218,7 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Admin Settings, Security & Hidden Demo Tools Modal */}
+      {/* Admin Settings Modal */}
       {isAdmin && showAdminModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
@@ -1240,27 +1227,16 @@ export default function HomePage() {
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
                   ● Admin Session Active
                 </span>
-                <h3 className="text-base font-bold mt-1">
-                  Ravi — Shop Owner Controls
-                </h3>
+                <h3 className="text-base font-bold mt-1">Ravi — Shop Owner Controls</h3>
                 <p className="text-xs text-slate-400">admin@mcpserver.com</p>
               </div>
-              <button
-                onClick={() => setShowAdminModal(false)}
-                className="text-slate-400 hover:text-white text-sm px-2 py-1 cursor-pointer"
-              >
-                ✕
-              </button>
+              <button onClick={() => setShowAdminModal(false)} className="text-slate-400 hover:text-white text-sm px-2 py-1 cursor-pointer">✕</button>
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300 block">
-                Your Private Claude MCP Connector URL
-              </label>
+              <label className="text-xs font-semibold text-slate-300 block">Your Private Claude MCP Connector URL</label>
               <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
-                <code className="text-emerald-400 truncate mr-2">
-                  /api/mcp?key=ravi123
-                </code>
+                <code className="text-emerald-400 truncate mr-2">/api/mcp?key=ravi123</code>
                 <button
                   onClick={copyMcpUrl}
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer"
@@ -1268,21 +1244,6 @@ export default function HomePage() {
                   {copiedMcp ? "✓ Copied!" : "Copy Full URL"}
                 </button>
               </div>
-              <p className="text-[10px] text-slate-500">
-                Claude can only queue unconfirmed drafts with this key. Only you can confirm bills to the ledger.
-              </p>
-            </div>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
-              <p className="font-bold text-slate-200">
-                Security & Access Architecture
-              </p>
-              <p className="text-slate-400">
-                • <strong className="text-emerald-300">Admin (You):</strong> Full write access to edit/confirm drafts, view profit margins, and manage stock.
-              </p>
-              <p className="text-slate-400">
-                • <strong className="text-amber-300">Vendors & Customers:</strong> Zero-login capability links (<code>/s/[token]</code>) scoped strictly to their own bills.
-              </p>
             </div>
 
             <div className="border-t border-slate-800 pt-3">
@@ -1291,9 +1252,7 @@ export default function HomePage() {
                 onClick={() => setShowDevTools(!showDevTools)}
                 className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-slate-200 font-medium cursor-pointer"
               >
-                <span>
-                  {showDevTools ? "▾" : "▸"} Developer & Demo Utilities
-                </span>
+                <span>{showDevTools ? "▾" : "▸"} Developer & Demo Utilities</span>
                 <span className="text-[10px] text-slate-500">Seed / Reset</span>
               </button>
 
@@ -1320,7 +1279,7 @@ export default function HomePage() {
                 onClick={handleLogout}
                 className="flex-1 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 font-semibold py-2.5 rounded-xl text-xs cursor-pointer"
               >
-                Sign Out (Switch to Read-Only)
+                Sign Out
               </button>
               <button
                 onClick={() => setShowAdminModal(false)}
@@ -1333,74 +1292,41 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Printable Tax Invoice / Payment Receipt Modal */}
+      {/* Printable Invoice Modal */}
       {invoiceEntry && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  {invoiceEntry.type === "payment"
-                    ? "PAYMENT RECEIPT"
-                    : `${invoiceEntry.type.toUpperCase()} INVOICE`}
+                  {invoiceEntry.type === "payment" ? "PAYMENT RECEIPT" : `${invoiceEntry.type.toUpperCase()} INVOICE`}
                 </span>
                 <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
-                <p className="text-xs text-slate-400">
-                  {invoiceEntry.bill_no
-                    ? `Bill #${invoiceEntry.bill_no}`
-                    : `Ref #${invoiceEntry.id.slice(0, 6)}`}{" "}
-                  •{" "}
-                  {new Date(invoiceEntry.date).toLocaleDateString("en-IN", {
-                    day: "numeric",
-                    month: "short",
-                    year: "numeric",
-                  })}
-                </p>
               </div>
-              <button
-                onClick={() => setInvoiceEntry(null)}
-                className="text-slate-400 hover:text-white text-sm px-2 py-1"
-              >
-                ✕
-              </button>
+              <button onClick={() => setInvoiceEntry(null)} className="text-slate-400 hover:text-white text-sm px-2 py-1">✕</button>
             </div>
 
             <div className="space-y-2 text-xs">
               <div className="flex justify-between">
                 <span className="text-slate-400">Party Name:</span>
-                <span className="font-bold text-white">
-                  {invoiceEntry.party?.name} ({invoiceEntry.party?.type})
-                </span>
+                <span className="font-bold text-white">{invoiceEntry.party?.name} ({invoiceEntry.party?.type})</span>
               </div>
               {invoiceEntry.item && (
                 <div className="flex justify-between">
                   <span className="text-slate-400">Item & Rate:</span>
                   <span className="font-semibold text-slate-200">
-                    {invoiceEntry.qty} {invoiceEntry.item.unit}{" "}
-                    {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
+                    {invoiceEntry.qty} {invoiceEntry.item.unit} {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
                   </span>
                 </div>
               )}
               <div className="flex justify-between pt-2 border-t border-slate-800 text-sm">
                 <span className="text-slate-300 font-semibold">Total Amount:</span>
-                <span className="font-extrabold text-white">
-                  ₹{Number(invoiceEntry.total_amount).toLocaleString("en-IN")}
-                </span>
+                <span className="font-extrabold text-white">₹{Number(invoiceEntry.total_amount).toLocaleString("en-IN")}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Amount Paid:</span>
-                <span className="font-bold text-emerald-400">
-                  ₹{Number(invoiceEntry.paid_amount).toLocaleString("en-IN")}
-                </span>
+                <span className="font-bold text-emerald-400">₹{Number(invoiceEntry.paid_amount).toLocaleString("en-IN")}</span>
               </div>
-              {invoiceEntry.type !== "payment" && (
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Balance Due:</span>
-                  <span className="font-bold text-amber-400">
-                    ₹{Number(invoiceEntry.unpaid_amount).toLocaleString("en-IN")}
-                  </span>
-                </div>
-              )}
             </div>
 
             <div className="flex gap-2 pt-2">
@@ -1421,15 +1347,13 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* 4-Tab Mobile Bottom Navigation Bar */}
+      {/* 4-Tab Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex justify-center">
         <div className="w-full max-w-md grid grid-cols-4 py-2 px-3 gap-1.5">
           <button
             onClick={() => setTab("inbox")}
             className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
-              tab === "inbox"
-                ? "bg-emerald-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
+              tab === "inbox" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
             }`}
           >
             Inbox ({drafts.length})
@@ -1437,9 +1361,7 @@ export default function HomePage() {
           <button
             onClick={() => setTab("parties")}
             className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
-              tab === "parties"
-                ? "bg-emerald-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
+              tab === "parties" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
             }`}
           >
             Parties ({parties.length})
@@ -1447,9 +1369,7 @@ export default function HomePage() {
           <button
             onClick={() => setTab("stock")}
             className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
-              tab === "stock"
-                ? "bg-emerald-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
+              tab === "stock" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
             }`}
           >
             Stock ({stock.length})
@@ -1457,9 +1377,7 @@ export default function HomePage() {
           <button
             onClick={() => setTab("insights")}
             className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
-              tab === "insights"
-                ? "bg-emerald-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
+              tab === "insights" ? "bg-emerald-500 text-slate-950" : "text-slate-400 hover:text-white"
             }`}
           >
             Insights 📊

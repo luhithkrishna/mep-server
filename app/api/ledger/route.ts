@@ -135,7 +135,7 @@ export async function POST(req: NextRequest) {
       const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
       const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
-      // 1. 45 days ago: Deadstock Purchase (50m red velvet @ ₹500/m = ₹25,000, 0 sold)
+      // 1. Purchase: Surat Silk Mills (50m red velvet @ ₹500/m = ₹25,000, paid full)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -157,7 +157,7 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 2. 20 days ago: Shah Textiles Purchase #1 (200m white cotton @ ₹310/m = ₹62,000)
+      // 2. Purchase: Shah Textiles #1 (200m white cotton @ ₹310/m = ₹62,000)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -179,8 +179,7 @@ export async function POST(req: NextRequest) {
         rate: 310,
       });
 
-      // 3. 14 days ago: Shah Textiles Purchase #2 (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
-      // Combined 300m cost = ₹96,000 -> Weighted-Avg Cost = ₹320/m
+      // 3. Purchase: Shah Textiles #2 (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
       const { data: e3 } = await sb
         .from("entries")
         .insert({
@@ -202,7 +201,7 @@ export async function POST(req: NextRequest) {
         rate: 340,
       });
 
-      // 4. 8 days ago: Ramesh Traders Bulk Sale (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
+      // 4. Sale: Ramesh Traders (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
       const { data: e4 } = await sb
         .from("entries")
         .insert({
@@ -224,7 +223,7 @@ export async function POST(req: NextRequest) {
         rate: 420,
       });
 
-      // 5. 3 days ago: Kiran Boutique High-Margin Credit Sale (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
+      // 5. Sale: Kiran Boutique (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
       const { data: e5 } = await sb
         .from("entries")
         .insert({
@@ -246,14 +245,14 @@ export async function POST(req: NextRequest) {
         rate: 450,
       });
 
-      // 6. 1 day ago: Paid Shah Textiles ₹25,000 via UPI
+      // 6. Payment to Shah Textiles: ₹48,000 via UPI (Settles Shah's account fully)
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
         party_id: shah.id,
         date: daysAgo(1),
         status: "confirmed",
-        paid_amount: 25000,
+        paid_amount: 48000,
         payment_method: "UPI",
       });
 

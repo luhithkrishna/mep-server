@@ -313,8 +313,6 @@ export async function computeLedgerState(shopId: string) {
       totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
     const aov = orderCount > 0 ? Math.round(totalBilled / orderCount) : 0;
     const avgRatePaid = totalQty > 0 ? Math.round(totalBilled / totalQty) : 0;
-    const cashRealizedProfit =
-      party.type === "customer" ? Number((totalPaid - totalCost).toFixed(2)) : 0;
 
     let customerTier: "VIP Cash Buyer" | "High-Margin Credit" | "Credit Risk" | "New" = "New";
     if (party.type === "customer" && orderCount > 0) {
@@ -340,7 +338,6 @@ export async function computeLedgerState(shopId: string) {
       aov,
       avg_rate_paid: avgRatePaid,
       total_profit: Number(totalProfit.toFixed(2)),
-      cash_realized_profit: cashRealizedProfit,
       profit_margin_pct: profitMarginPct,
       payment_ratio_pct: paymentRatioPct,
       favorite_item: topItem,
@@ -367,9 +364,9 @@ export async function computeLedgerState(shopId: string) {
     .filter((e: any) => e.type === "sale")
     .reduce((acc: number, e: any) => acc + e.profit, 0);
 
-  const totalCashRealizedProfit = partyBalances
+  const totalCashCollected = partyBalances
     .filter((p: any) => p.type === "customer")
-    .reduce((acc: number, p: any) => acc + p.cash_realized_profit, 0);
+    .reduce((acc: number, p: any) => acc + p.total_paid, 0);
 
   const deadstockValue = stockList
     .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
@@ -387,8 +384,7 @@ export async function computeLedgerState(shopId: string) {
     total_stock_value: totalShopStockValue,
     active_stock_value: activeStockValue,
     total_profit: totalBookedProfit,
-    cash_realized_profit: totalCashRealizedProfit,
-    uncollected_profit: Number((totalBookedProfit - totalCashRealizedProfit).toFixed(2)),
+    total_cash_collected: totalCashCollected,
     deadstock_value: deadstockValue,
     coverage_ratio: coverageRatio,
   };
