@@ -10,6 +10,7 @@ export default function HomePage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [copiedMcp, setCopiedMcp] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [invoiceEntry, setInvoiceEntry] = useState<any>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [form, setForm] = useState({
     type: "purchase",
@@ -62,6 +63,8 @@ export default function HomePage() {
           ? Number(current.paid_amount)
           : entry.paid_amount,
       bill_no: current.bill_no !== undefined ? current.bill_no : entry.bill_no,
+      due_days:
+        current.due_days !== undefined ? Number(current.due_days) : entry.due_days,
       payment_method:
         current.payment_method !== undefined
           ? current.payment_method
@@ -89,12 +92,24 @@ export default function HomePage() {
   }
 
   async function handleResetAll() {
-    if (!confirm("Reset all demo bills, parties, and stock to start fresh?")) return;
+    if (!confirm("Clear all entries, parties, and stock to start with a blank slate?"))
+      return;
     setLoading(true);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "reset_all" }),
+    }).then((r) => r.json());
+    if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
+    setLoading(false);
+  }
+
+  async function handleSeedDemo() {
+    setLoading(true);
+    const res = await fetch("/api/ledger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "seed_demo" }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setLoading(false);
@@ -134,6 +149,7 @@ export default function HomePage() {
     total_receivables: 0,
     total_stock_value: 0,
     total_profit: 0,
+    deadstock_value: 0,
   };
 
   return (
@@ -153,12 +169,19 @@ export default function HomePage() {
               Claude MCP Textile Ledger • Exact Code Math
             </p>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <button
               onClick={() => setShowQuickAdd(!showQuickAdd)}
-              className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1.5 rounded-lg font-medium cursor-pointer"
+              className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2 py-1.5 rounded-lg font-medium cursor-pointer"
             >
               + Draft
+            </button>
+            <button
+              onClick={handleSeedDemo}
+              className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2 py-1.5 rounded-lg font-semibold cursor-pointer"
+              title="Populate sample shop data"
+            >
+              ⚡ Seed
             </button>
             <button
               onClick={handleResetAll}
@@ -169,14 +192,14 @@ export default function HomePage() {
             </button>
             <Link
               href="/login"
-              className="text-[11px] text-slate-400 hover:text-white px-1.5 py-1"
+              className="text-[11px] text-slate-400 hover:text-white px-1 py-1"
             >
               Login
             </Link>
           </div>
         </div>
 
-        {/* 1-Click MCP Connector Bar for Reviewers */}
+        {/* 1-Click MCP Connector Bar */}
         <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-[11px]">
           <span className="text-slate-400 truncate mr-2">
             MCP: <code className="text-emerald-400">/api/mcp?key=ravi123</code>
@@ -227,7 +250,7 @@ export default function HomePage() {
           >
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold text-emerald-400 uppercase">
-                Simulate Claude MCP Draft
+                Create Manual / Test Draft
               </span>
               <button
                 type="button"
@@ -316,7 +339,7 @@ export default function HomePage() {
               type="submit"
               className="w-full bg-emerald-500 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
             >
-              Create Draft in Inbox
+              Save Draft to Inbox
             </button>
           </form>
         )}
@@ -344,7 +367,7 @@ export default function HomePage() {
                     No unconfirmed drafts
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment to see it appear live here.
+                    Tell Claude about a purchase, sale, or payment (or tap &quot;⚡ Seed&quot; above).
                   </p>
                 </div>
               )}
@@ -367,9 +390,20 @@ export default function HomePage() {
                   >
                     <div className="flex justify-between items-start">
                       <div>
-                        <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
-                          DRAFT {d.type}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
+                            DRAFT {d.type}
+                          </span>
+                          {d.due_date && (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-amber-200 border border-amber-500/30">
+                              Due:{" "}
+                              {new Date(d.due_date).toLocaleDateString("en-IN", {
+                                day: "numeric",
+                                month: "short",
+                              })}
+                            </span>
+                          )}
+                        </div>
                         <h3 className="text-base font-bold mt-1">
                           {d.party?.name || "Unknown Party"}
                         </h3>
@@ -431,16 +465,33 @@ export default function HomePage() {
                             className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
-                        <div>
-                          <label className="text-[11px] text-slate-400 block mb-1">
-                            Bill No.
-                          </label>
-                          <input
-                            type="text"
-                            value={getEditVal(d, "bill_no")}
-                            onChange={(e) => setEditVal(d.id, "bill_no", e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
-                          />
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <div>
+                            <label className="text-[11px] text-slate-400 block mb-1">
+                              Bill No.
+                            </label>
+                            <input
+                              type="text"
+                              value={getEditVal(d, "bill_no")}
+                              onChange={(e) =>
+                                setEditVal(d.id, "bill_no", e.target.value)
+                              }
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] text-slate-400 block mb-1">
+                              Due (Days)
+                            </label>
+                            <input
+                              type="number"
+                              value={getEditVal(d, "due_days")}
+                              onChange={(e) =>
+                                setEditVal(d.id, "due_days", e.target.value)
+                              }
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-sm"
+                            />
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -510,18 +561,29 @@ export default function HomePage() {
               {confirmed.map((c: any) => (
                 <div
                   key={c.id}
-                  className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2"
+                  className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2.5"
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
-                        CONFIRMED {c.type}
-                      </span>
-                      {c.bill_no && (
-                        <span className="ml-2 text-xs text-slate-400">
-                          Bill #{c.bill_no}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
+                          CONFIRMED {c.type}
                         </span>
-                      )}
+                        {c.bill_no && (
+                          <span className="text-xs text-slate-400">
+                            Bill #{c.bill_no}
+                          </span>
+                        )}
+                        {c.due_date && c.unpaid_amount > 0 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-semibold">
+                            Due:{" "}
+                            {new Date(c.due_date).toLocaleDateString("en-IN", {
+                              day: "numeric",
+                              month: "short",
+                            })}
+                          </span>
+                        )}
+                      </div>
                       <h3 className="text-sm font-bold mt-1">{c.party?.name}</h3>
                     </div>
                     <div className="text-right flex items-start gap-2">
@@ -529,10 +591,14 @@ export default function HomePage() {
                         <p className="text-base font-bold text-white">
                           ₹{Number(c.total_amount).toLocaleString("en-IN")}
                         </p>
-                        {c.type !== "payment" && (
+                        {c.type !== "payment" ? (
                           <p className="text-[11px] text-slate-400">
                             Paid: ₹{Number(c.paid_amount).toLocaleString("en-IN")} • Due: ₹
                             {Number(c.unpaid_amount).toLocaleString("en-IN")}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-emerald-400">
+                            via {c.payment_method || "UPI"}
                           </p>
                         )}
                       </div>
@@ -575,24 +641,34 @@ export default function HomePage() {
                       </div>
                     </div>
                   )}
+
+                  <div className="pt-1 flex justify-end">
+                    <button
+                      onClick={() => setInvoiceEntry(c)}
+                      className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-lg font-medium cursor-pointer"
+                    >
+                      📄 View Invoice / Receipt
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* TAB 2: PARTIES & LIVE STATEMENT LINKS */}
+        {/* TAB 2: PARTIES, CUSTOMER TRENDS & LIVE STATEMENT LINKS */}
         {!loading && tab === "parties" && (
           <div className="space-y-3">
             <h2 className="text-sm font-bold text-slate-200">
-              Vendor & Customer Balances ({parties.length})
+              Vendor Credits & Customer Trends ({parties.length})
             </h2>
             {parties.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No parties yet. Confirm a purchase or sale first.
+                No parties yet. Confirm a purchase or sale first (or tap &quot;⚡ Seed&quot;).
               </div>
             )}
             {parties.map((p: any) => {
+              const isVendor = p.type === "vendor";
               const statementUrl =
                 typeof window !== "undefined"
                   ? `${window.location.origin}/s/${p.statement_token}`
@@ -610,7 +686,13 @@ export default function HomePage() {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      <span
+                        className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                          isVendor
+                            ? "bg-amber-500/15 text-amber-300"
+                            : "bg-sky-500/15 text-sky-300"
+                        }`}
+                      >
                         {p.type}
                       </span>
                       <h3 className="text-base font-bold mt-1">{p.name}</h3>
@@ -621,13 +703,60 @@ export default function HomePage() {
                     </div>
                     <div className="text-right">
                       <p className="text-[11px] text-slate-400">
-                        {p.type === "vendor" ? "You Owe" : "Owes You"}
+                        {p.balance === 0
+                          ? "Status"
+                          : isVendor
+                          ? "You Owe (Payable)"
+                          : "Owes You (Receivable)"}
                       </p>
-                      <p className="text-xl font-extrabold text-emerald-400">
-                        ₹{Number(p.balance).toLocaleString("en-IN")}
-                      </p>
+                      {p.balance === 0 ? (
+                        <p className="text-sm font-extrabold text-emerald-400 mt-0.5">
+                          ✓ Settled (₹0)
+                        </p>
+                      ) : (
+                        <p
+                          className={`text-xl font-extrabold ${
+                            isVendor ? "text-amber-400" : "text-sky-400"
+                          }`}
+                        >
+                          ₹{Number(p.balance).toLocaleString("en-IN")}
+                        </p>
+                      )}
                     </div>
                   </div>
+
+                  {/* Customer Purchasing Trends & Profit Generation Box */}
+                  {!isVendor ? (
+                    <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                      <div>
+                        <span className="text-slate-400 block">Profit Generated</span>
+                        <span className="font-bold text-emerald-400">
+                          +₹{Number(p.total_profit).toLocaleString("en-IN")} ({p.profit_margin_pct}%)
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">Payment Ratio</span>
+                        <span className="font-bold text-slate-200">
+                          {p.payment_ratio_pct}% Paid
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">Buying Trend</span>
+                        <span className="font-bold text-sky-300 capitalize">
+                          {p.order_count}x • {p.favorite_item || "Cloth"}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between items-center text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
+                      <span className="text-slate-400">
+                        Supplies: <strong className="text-slate-200 capitalize">{p.favorite_item || "Textiles"}</strong> ({p.order_count} bills)
+                      </span>
+                      <span className="text-emerald-400 font-semibold">
+                        {p.payment_ratio_pct}% Settled
+                      </span>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-3 gap-2">
                     <Link
@@ -658,50 +787,191 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 3: STOCK & WEIGHTED-AVERAGE COST */}
+        {/* TAB 3: STOCK, WEIGHTED-AVERAGE COST & DEADSTOCK RADAR */}
         {!loading && tab === "stock" && (
           <div className="space-y-3">
-            <h2 className="text-sm font-bold text-slate-200">
-              Live Cloth Stock & Weighted-Avg Cost ({stock.length})
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-200">
+                Stock, Avg Cost & Deadstock Radar ({stock.length})
+              </h2>
+              {kpis.deadstock_value > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
+                  At-Risk Capital: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
+                </span>
+              )}
+            </div>
+
             {stock.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-                No stock items yet. Confirm a purchase to see live stock.
+                No stock items yet. Confirm a purchase or tap &quot;⚡ Seed&quot; above.
               </div>
             )}
-            {stock.map((s: any) => (
-              <div
-                key={s.item_id}
-                className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center"
-              >
-                <div>
-                  <h3 className="text-base font-bold capitalize">{s.name}</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit}
-                  </p>
-                  <p className="text-xs text-emerald-400 font-semibold mt-1">
-                    Weighted-Avg Cost: ₹{s.avg_cost}/{s.unit}
-                  </p>
+
+            {stock.map((s: any) => {
+              const isDead = s.stock_status === "DEADSTOCK";
+              const isSlow = s.stock_status === "SLOW_MOVING";
+
+              return (
+                <div
+                  key={s.item_id}
+                  className={`bg-slate-900 border rounded-2xl p-4 space-y-3 ${
+                    isDead
+                      ? "border-rose-500/50"
+                      : isSlow
+                      ? "border-amber-500/40"
+                      : "border-slate-800"
+                  }`}
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold capitalize">{s.name}</h3>
+                        {isDead && (
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                            🔴 DEADSTOCK (0% Sold)
+                          </span>
+                        )}
+                        {isSlow && (
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
+                            🟡 SLOW MOVING ({s.sell_through_pct}% Sold)
+                          </span>
+                        )}
+                        {s.stock_status === "FAST_MOVING" && (
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                            🟢 FAST MOVING ({s.sell_through_pct}% Sold)
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit}
+                      </p>
+                      <p className="text-xs text-emerald-400 font-semibold mt-0.5">
+                        Weighted-Avg Cost: ₹{s.avg_cost}/{s.unit}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-extrabold text-white">
+                        {s.stock_qty}{" "}
+                        <span className="text-sm font-normal text-slate-400">
+                          {s.unit}
+                        </span>
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        Capital Locked: ₹
+                        {Number(s.stock_value).toLocaleString("en-IN")}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Sell-Through Progress Bar */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>Sell-Through Velocity</span>
+                      <span className="font-semibold text-slate-200">
+                        {s.sell_through_pct}% Sold
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                      <div
+                        className={`h-full transition-all ${
+                          isDead
+                            ? "bg-rose-500"
+                            : isSlow
+                            ? "bg-amber-400"
+                            : "bg-emerald-400"
+                        }`}
+                        style={{ width: `${Math.max(4, s.sell_through_pct)}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-2xl font-extrabold text-white">
-                    {s.stock_qty}{" "}
-                    <span className="text-sm font-normal text-slate-400">
-                      {s.unit}
-                    </span>
-                  </p>
-                  <p className="text-[11px] text-slate-400">
-                    Value: ₹
-                    {Number((s.stock_qty * s.avg_cost).toFixed(0)).toLocaleString(
-                      "en-IN"
-                    )}
-                  </p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>
+
+      {/* Printable Tax Invoice / Payment Receipt Modal */}
+      {invoiceEntry && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                  {invoiceEntry.type === "payment" ? "PAYMENT RECEIPT" : `${invoiceEntry.type.toUpperCase()} INVOICE`}
+                </span>
+                <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
+                <p className="text-xs text-slate-400">
+                  {invoiceEntry.bill_no ? `Bill #${invoiceEntry.bill_no}` : `Ref #${invoiceEntry.id.slice(0, 6)}`} •{" "}
+                  {new Date(invoiceEntry.date).toLocaleDateString("en-IN", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  })}
+                </p>
+              </div>
+              <button
+                onClick={() => setInvoiceEntry(null)}
+                className="text-slate-400 hover:text-white text-sm px-2 py-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Party Name:</span>
+                <span className="font-bold text-white">
+                  {invoiceEntry.party?.name} ({invoiceEntry.party?.type})
+                </span>
+              </div>
+              {invoiceEntry.item && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Item & Rate:</span>
+                  <span className="font-semibold text-slate-200">
+                    {invoiceEntry.qty} {invoiceEntry.item.unit} {invoiceEntry.item.name} × ₹{invoiceEntry.rate}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between pt-2 border-t border-slate-800 text-sm">
+                <span className="text-slate-300 font-semibold">Total Amount:</span>
+                <span className="font-extrabold text-white">
+                  ₹{Number(invoiceEntry.total_amount).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Amount Paid:</span>
+                <span className="font-bold text-emerald-400">
+                  ₹{Number(invoiceEntry.paid_amount).toLocaleString("en-IN")}
+                </span>
+              </div>
+              {invoiceEntry.type !== "payment" && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Balance Due:</span>
+                  <span className="font-bold text-amber-400">
+                    ₹{Number(invoiceEntry.unpaid_amount).toLocaleString("en-IN")}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => window.print()}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+              >
+                🖨️ Print / Save PDF
+              </button>
+              <button
+                onClick={() => setInvoiceEntry(null)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex justify-center">

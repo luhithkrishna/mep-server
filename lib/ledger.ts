@@ -56,6 +56,7 @@ export async function getOrCreateItem(shopId: string, name: string, unit = "m") 
   const { data: existing } = await sb
     .from("items")
     .select("*")
+    .select("*")
     .eq("shop_id", shopId)
     .ilike("name", cleanName)
     .maybeSingle();
@@ -106,6 +107,8 @@ export async function computeLedgerState(shopId: string) {
       avg_cost: number;
       stock_qty: number;
       stock_value: number;
+      sell_through_pct: number;
+      stock_status: "DEADSTOCK" | "SLOW_MOVING" | "FAST_MOVING" | "OUT_OF_STOCK";
     }
   >();
 
@@ -120,6 +123,8 @@ export async function computeLedgerState(shopId: string) {
       avg_cost: 0,
       stock_qty: 0,
       stock_value: 0,
+      sell_through_pct: 0,
+      stock_status: "DEADSTOCK",
     });
   }
 
@@ -153,7 +158,21 @@ export async function computeLedgerState(shopId: string) {
         ? Number((st.purchase_cost / st.purchased_qty).toFixed(2))
         : 0;
     st.stock_qty = Number((st.purchased_qty - st.sold_qty).toFixed(2));
-    st.stock_value = Number((st.stock_qty * st.avg_cost).toFixed(2));
+    st.stock_value = Number((Math.max(0, st.stock_qty) * st.avg_cost).toFixed(2));
+    st.sell_through_pct =
+      st.purchased_qty > 0
+        ? Number(Math.min(100, (st.sold_qty / st.purchased_qty) * 100).toFixed(1))
+        : 0;
+
+    if (st.stock_qty <= 0 && st.purchased_qty > 0) {
+      st.stock_status = "OUT_OF_STOCK";
+    } else if (st.sold_qty === 0) {
+      st.stock_status = "DEADSTOCK";
+    } else if (st.sell_through_pct < 25) {
+      st.stock_status = "SLOW_MOVING";
+    } else {
+      st.stock_status = "FAST_MOVING";
+    }
   }
 
   const enrichedEntries = (entries || []).map((entry: any) => {
@@ -178,6 +197,12 @@ export async function computeLedgerState(shopId: string) {
       profit = Number((totalAmount - cost).toFixed(2));
     }
 
+    let dueDays = 0;
+    if (entry.due_date && entry.date) {
+      const diff = new Date(entry.due_date).getTime() - new Date(entry.date).getTime();
+      dueDays = Math.max(0, Math.round(diff / 86400000));
+    }
+
     return {
       ...entry,
       party: partyMap.get(entry.party_id) || null,
@@ -185,6 +210,7 @@ export async function computeLedgerState(shopId: string) {
       line_id: firstLine?.id || null,
       qty,
       rate,
+      due_days: dueDays,
       total_amount: totalAmount,
       paid_amount: paidAmount,
       cost,
@@ -200,26 +226,52 @@ export async function computeLedgerState(shopId: string) {
     );
     let totalBilled = 0;
     let totalPaid = 0;
+    let totalProfit = 0;
+    let orderCount = 0;
+    const itemCounts: Record<string, number> = {};
+
     for (const e of pEntries) {
       if (e.type === "purchase" || e.type === "sale") {
         totalBilled += e.total_amount;
         totalPaid += e.paid_amount;
+        orderCount += 1;
+        if (e.type === "sale") {
+          totalProfit += e.profit;
+        }
+        if (e.item?.name) {
+          itemCounts[e.item.name] = (itemCounts[e.item.name] || 0) + Number(e.qty || 0);
+        }
       } else if (e.type === "payment") {
         totalPaid += e.paid_amount;
       }
     }
+
+    const topItem =
+      Object.entries(itemCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
     const balance = Number((totalBilled - totalPaid).toFixed(2));
+    const paymentRatioPct =
+      totalBilled > 0 ? Math.min(100, Math.round((totalPaid / totalBilled) * 100)) : 100;
+    const profitMarginPct =
+      totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
+
     return {
       ...party,
       total_billed: Number(totalBilled.toFixed(2)),
       total_paid: Number(totalPaid.toFixed(2)),
       balance,
+      order_count: orderCount,
+      total_profit: Number(totalProfit.toFixed(2)),
+      profit_margin_pct: profitMarginPct,
+      payment_ratio_pct: paymentRatioPct,
+      favorite_item: topItem,
       entries: pEntries,
     };
   });
 
   const stockList = Array.from(stockMap.values());
-  const confirmedList = enrichedEntries.filter((e: any) => e.status === "confirmed").reverse();
+  const confirmedList = enrichedEntries
+    .filter((e: any) => e.status === "confirmed")
+    .reverse();
 
   const kpis = {
     total_payables: partyBalances
@@ -232,6 +284,9 @@ export async function computeLedgerState(shopId: string) {
     total_profit: confirmedList
       .filter((e: any) => e.type === "sale")
       .reduce((acc: number, e: any) => acc + e.profit, 0),
+    deadstock_value: stockList
+      .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
+      .reduce((acc: number, s: any) => acc + s.stock_value, 0),
   };
 
   return {

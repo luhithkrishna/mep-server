@@ -10,7 +10,8 @@ import {
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
 };
 
 const TOOLS = [
@@ -47,6 +48,7 @@ const TOOLS = [
         total_amount: { type: "number", description: "Total sale amount in INR, e.g. 4500" },
         rate: { type: "number", description: "Rate per unit in INR (optional if total_amount is given)" },
         paid_amount: { type: "number", description: "Amount customer paid now in INR, e.g. 2000" },
+        due_days: { type: "number", description: "Optional credit due days" },
         idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
       },
       required: ["party_name", "item_name", "qty"],
@@ -70,7 +72,7 @@ const TOOLS = [
   {
     name: "get_stock",
     description:
-      "Get exact current stock quantity and weighted-average cost per unit from confirmed ledger entries.",
+      "Get exact current stock quantity, weighted-average cost per unit, sell-through %, and deadstock status from confirmed ledger entries.",
     inputSchema: {
       type: "object",
       properties: {
@@ -94,6 +96,15 @@ const TOOLS = [
     name: "list_outstanding",
     description:
       "List all vendors we owe and all customers who owe us with exact balances and live statement links.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_business_insights",
+    description:
+      "Analyze deadstock/slow-moving inventory (locked capital & sell-through rate) and customer purchasing/profit trends using exact deterministic math.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -183,6 +194,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       total_amount,
       rate,
       paid_amount = 0,
+      due_days,
       idempotency_key,
     } = args || {};
 
@@ -207,6 +219,9 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     const party = await getOrCreateParty(shop.id, party_name, "customer");
     const item = await getOrCreateItem(shop.id, item_name, "m");
+    const dueDate = due_days
+      ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
+      : null;
 
     const { data: entry, error } = await sb
       .from("entries")
@@ -214,6 +229,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
         shop_id: shop.id,
         type: "sale",
         party_id: party.id,
+        due_date: dueDate,
         status: "draft",
         paid_amount: Number(paid_amount) || 0,
         idempotency_key: idempotency_key || null,
@@ -256,7 +272,10 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       }
     }
 
-    const { data: allParties = [] } = await sb.from("parties").select("*").eq("shop_id", shop.id);
+    const { data: allParties = [] } = await sb
+      .from("parties")
+      .select("*")
+      .eq("shop_id", shop.id);
     const matched =
       (allParties || []).find(
         (p: any) =>
@@ -300,7 +319,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     return list
       .map(
         (s: any) =>
-          `• ${s.name}: ${s.stock_qty} ${s.unit} in stock (Purchased: ${s.purchased_qty} ${s.unit}, Sold: ${s.sold_qty} ${s.unit}, Weighted-Avg Cost: ₹${s.avg_cost}/${s.unit})`
+          `• ${s.name}: ${s.stock_qty} ${s.unit} left (In: ${s.purchased_qty} ${s.unit}, Sold: ${s.sold_qty} ${s.unit} [${s.sell_through_pct}%], Avg Cost: ₹${s.avg_cost}/${s.unit}, Value: ₹${s.stock_value.toLocaleString("en-IN")}, Status: ${s.stock_status})`
       )
       .join("\n");
   }
@@ -327,15 +346,22 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       whoOwes,
       `- Party Type: ${party.type}`,
       `- Total Confirmed Billed: ₹${party.total_billed.toLocaleString("en-IN")}`,
-      `- Total Confirmed Paid: ₹${party.total_paid.toLocaleString("en-IN")}`,
+      `- Total Confirmed Paid: ₹${party.total_paid.toLocaleString("en-IN")} (${party.payment_ratio_pct}% paid)`,
+      party.type === "customer"
+        ? `- Exact Profit Generated: +₹${party.total_profit.toLocaleString("en-IN")} (${party.profit_margin_pct}% margin)`
+        : null,
       `- Live Public Statement Link (no login required): ${statementUrl}`,
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   if (name === "list_outstanding") {
     const state = await computeLedgerState(shop.id);
     const vendors = state.parties.filter((p: any) => p.type === "vendor" && p.balance !== 0);
-    const customers = state.parties.filter((p: any) => p.type === "customer" && p.balance !== 0);
+    const customers = state.parties.filter(
+      (p: any) => p.type === "customer" && p.balance !== 0
+    );
 
     const lines: string[] = ["=== Outstanding Balances (Confirmed Ledger) ==="];
     lines.push("\n1. Vendors You Owe (Payables):");
@@ -362,6 +388,46 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     return lines.join("\n");
   }
 
+  if (name === "get_business_insights") {
+    const state = await computeLedgerState(shop.id);
+    const deadOrSlow = state.stock.filter(
+      (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
+    );
+    const customers = state.parties
+      .filter((p: any) => p.type === "customer")
+      .sort((a: any, b: any) => b.total_profit - a.total_profit);
+
+    const lines: string[] = [
+      "=== MCP Server Business Insights (100% Deterministic Math) ===",
+      `• Total Realized Profit: +₹${state.kpis.total_profit.toLocaleString("en-IN")}`,
+      `• Total Stock Value: ₹${state.kpis.total_stock_value.toLocaleString("en-IN")} (At-Risk / Deadstock Capital: ₹${state.kpis.deadstock_value.toLocaleString("en-IN")})`,
+      "\n1. Deadstock & Slow-Moving Inventory:",
+    ];
+
+    if (deadOrSlow.length === 0) {
+      lines.push("   • None! All items have healthy sell-through (>25%).");
+    } else {
+      for (const s of deadOrSlow) {
+        lines.push(
+          `   • [${s.stock_status}] ${s.name}: ${s.stock_qty} ${s.unit} unsold (${s.sell_through_pct}% sold) -> ₹${s.stock_value.toLocaleString("en-IN")} capital locked`
+        );
+      }
+    }
+
+    lines.push("\n2. Customer Purchasing & Profit Trends:");
+    if (customers.length === 0) {
+      lines.push("   • No confirmed customer sales yet.");
+    } else {
+      for (const c of customers) {
+        lines.push(
+          `   • ${c.name}: Profit +₹${c.total_profit.toLocaleString("en-IN")} (${c.profit_margin_pct}% margin) | Orders: ${c.order_count} | Top Item: ${c.favorite_item || "N/A"} | Payment Discipline: ${c.payment_ratio_pct}% paid`
+        );
+      }
+    }
+
+    return lines.join("\n");
+  }
+
   throw new Error(`Unknown tool: ${name}`);
 }
 
@@ -383,7 +449,10 @@ async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | 
     };
   }
 
-  if (method === "notifications/initialized" || method === "notifications/cancelled") {
+  if (
+    method === "notifications/initialized" ||
+    method === "notifications/cancelled"
+  ) {
     return null;
   }
 
@@ -409,7 +478,12 @@ async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | 
 
   if (method === "tools/call") {
     try {
-      const text = await executeTool(params?.name, params?.arguments || {}, reqUrl, mcpKey);
+      const text = await executeTool(
+        params?.name,
+        params?.arguments || {},
+        reqUrl,
+        mcpKey
+      );
       return {
         jsonrpc: "2.0",
         id,
