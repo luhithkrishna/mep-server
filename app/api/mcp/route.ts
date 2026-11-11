@@ -175,7 +175,6 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     if (error) throw new Error(error.message);
 
-    // Normalize single-item or multi-item input
     let rawLines: Array<{ item_name: string; qty: number; unit?: string; rate?: number; total_amount?: number }> = [];
     if (Array.isArray(items) && items.length > 0) {
       rawLines = items.map((it: any) => ({
@@ -197,7 +196,6 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       ];
     }
 
-    // If top-level total_amount was given for a multi-item bill without individual item rates, distribute across total qty
     const totalQtyAll = rawLines.reduce((acc, l) => acc + (Number(l.qty) || 0), 0);
     const hasAnyItemPrice = rawLines.some(
       (l) => (l.rate !== undefined && l.rate > 0) || (l.total_amount !== undefined && l.total_amount > 0)
@@ -232,7 +230,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     }
 
     const unpaid = Number((grandTotal - (Number(paid_amount) || 0)).toFixed(2));
-    return `Draft ${name === "create_sale" ? "Sale" : "Purchase"} saved in Inbox for ${party.name}: ${summaryParts.join(", ")} | Total: ₹${grandTotal} | Paid: ₹${paid_amount || 0} | Balance Due: ₹${unpaid}`;
+    return `[${shop.name}] Draft ${name === "create_sale" ? "Sale" : "Purchase"} saved in Inbox for ${party.name}: ${summaryParts.join(", ")} | Total: ₹${grandTotal} | Paid: ₹${paid_amount || 0} | Balance Due: ₹${unpaid}`;
   }
 
   if (name === "create_payment") {
@@ -251,12 +249,12 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       paid_amount: Number(amount),
       payment_method: method,
     });
-    return `Draft Payment of ₹${amount} (${method}) saved in Inbox for ${matched.name}.`;
+    return `[${shop.name}] Draft Payment of ₹${amount} (${method}) saved in Inbox for ${matched.name}.`;
   }
 
   if (name === "get_stock") {
     const state = await computeLedgerState(shop.id);
-    if (state.stock.length === 0) return "No confirmed stock items yet.";
+    if (state.stock.length === 0) return `[${shop.name}] No confirmed stock items yet.`;
     return state.stock
       .map(
         (s: any) =>
@@ -271,8 +269,8 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     const party = state.parties.find((p: any) =>
       p.name.toLowerCase().includes(String(party_name).toLowerCase())
     );
-    if (!party) return `Party "${party_name}" not found.`;
-    return `${party.name} (${party.type.toUpperCase()}): Total Billed ₹${party.total_billed} | Total Paid ₹${party.total_paid} | Outstanding Balance: ₹${party.balance} | Live Statement: ${origin}/s/${party.statement_token}`;
+    if (!party) return `Party "${party_name}" not found in ${shop.name}.`;
+    return `[${shop.name}] ${party.name} (${party.type.toUpperCase()}): Total Billed ₹${party.total_billed} | Total Paid ₹${party.total_paid} | Outstanding Balance: ₹${party.balance} | Live Statement: ${origin}/s/${party.statement_token}`;
   }
 
   if (name === "list_outstanding") {
@@ -287,7 +285,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       customers.length > 0
         ? customers.map((p: any) => `• ${p.name} [${p.customer_tier}]: Owes You ₹${p.balance} (${origin}/s/${p.statement_token})`).join("\n")
         : "None";
-    return `=== Vendors You Owe (Total: ₹${state.kpis.total_payables}) ===\n${vText}\n\n=== Customers Who Owe You (Total: ₹${state.kpis.total_receivables}) ===\n${cText}`;
+    return `=== [${shop.name}] Vendors You Owe (Total: ₹${state.kpis.total_payables}) ===\n${vText}\n\n=== Customers Who Owe You (Total: ₹${state.kpis.total_receivables}) ===\n${cText}`;
   }
 
   if (name === "get_business_insights") {
@@ -295,7 +293,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     const totalSales = state.parties
       .filter((p: any) => p.type === "customer")
       .reduce((acc: number, c: any) => acc + c.total_billed, 0);
-    return `=== MCP Server Business Insights ===\n• Total Sales Revenue: ₹${totalSales}\n• Total Booked Profit: +₹${state.kpis.total_profit}\n• Cash Collected in Hand/Bank: ₹${state.kpis.total_cash_collected}\n• Pending Customer Udhaar: ₹${state.kpis.total_receivables}\n• Vendor Payables Due: ₹${state.kpis.total_payables}\n• Active Stock Value: ₹${state.kpis.total_stock_value} (At-Risk Deadstock: ₹${state.kpis.deadstock_value})`;
+    return `=== ${shop.name} Business Insights ===\n• Total Sales Revenue: ₹${totalSales}\n• Total Booked Profit: +₹${state.kpis.total_profit}\n• Cash Collected in Hand/Bank: ₹${state.kpis.total_cash_collected}\n• Pending Customer Udhaar: ₹${state.kpis.total_receivables}\n• Vendor Payables Due: ₹${state.kpis.total_payables}\n• Active Stock Value: ₹${state.kpis.total_stock_value} (At-Risk Deadstock: ₹${state.kpis.deadstock_value})`;
   }
 
   throw new Error(`Unknown tool: ${name}`);
@@ -310,7 +308,7 @@ async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | 
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "mcp-server", version: "2.0.0" },
+        serverInfo: { name: "mcp-server", version: "2.1.0" },
       },
     };
   }
@@ -347,12 +345,16 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const shop = await getShop(searchParams.get("key"));
-  return NextResponse.json(
-    { name: "MCP Server", status: "live", shop: shop?.name },
-    { headers: CORS_HEADERS }
-  );
+  try {
+    const { searchParams } = new URL(req.url);
+    const shop = await getShop(searchParams.get("key"));
+    return NextResponse.json(
+      { name: "MCP Server", status: "live", shop: shop?.name, mcp_key: shop?.mcp_key },
+      { headers: CORS_HEADERS }
+    );
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 404, headers: CORS_HEADERS });
+  }
 }
 export async function POST(req: NextRequest) {
   try {

@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "MCP Server — B2B Textile Ledger",
+  title: "MCP Server — Free B2B Textile Ledger",
 };
 
 export default function RootLayout({

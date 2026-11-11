@@ -17,18 +17,68 @@ export function getSupabase() {
 
 export async function getShop(mcpKey?: string | null) {
   const sb = getSupabase();
-  if (mcpKey) {
-    const { data } = await sb.from("shops").select("*").eq("mcp_key", mcpKey).maybeSingle();
-    if (data) return data;
-  }
-  const { data: firstShop } = await sb.from("shops").select("*").limit(1).maybeSingle();
-  if (firstShop) return firstShop;
+  const cleanKey = (mcpKey || "ravi123").trim().toLowerCase();
 
-  const { data: created } = await sb
+  const { data: matched } = await sb
     .from("shops")
-    .insert({ name: "MCP Server", mcp_key: "ravi123" })
+    .select("*")
+    .ilike("mcp_key", cleanKey)
+    .maybeSingle();
+  if (matched) return matched;
+
+  if (cleanKey === "ravi123") {
+    const { data: firstShop } = await sb.from("shops").select("*").limit(1).maybeSingle();
+    if (firstShop) return firstShop;
+
+    const { data: created } = await sb
+      .from("shops")
+      .insert({ name: "MCP Server", mcp_key: "ravi123" })
+      .select("*")
+      .single();
+    return created;
+  }
+
+  throw new Error(`Shop key "${cleanKey}" not found. Create a free shop at /login first.`);
+}
+
+export async function createFreeShop(shopName: string, requestedKey?: string) {
+  const sb = getSupabase();
+  const cleanName = (shopName || "").trim();
+  if (!cleanName) throw new Error("Please enter a shop name.");
+
+  const slugBase = cleanName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 14) || "shop";
+
+  const cleanKey = (
+    requestedKey?.trim() || `${slugBase}-${Math.floor(1000 + Math.random() * 9000)}`
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "");
+
+  if (cleanKey.length < 3) {
+    throw new Error("Shop key must be at least 3 characters.");
+  }
+
+  const { data: existing } = await sb
+    .from("shops")
+    .select("*")
+    .ilike("mcp_key", cleanKey)
+    .maybeSingle();
+
+  if (existing) {
+    throw new Error(`Shop key "${cleanKey}" is already taken. Try another key.`);
+  }
+
+  const { data: created, error } = await sb
+    .from("shops")
+    .insert({ name: cleanName, mcp_key: cleanKey })
     .select("*")
     .single();
+
+  if (error) throw new Error(error.message);
   return created;
 }
 

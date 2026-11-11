@@ -25,7 +25,7 @@ export default nextConfig;
 write(
   "app/layout.tsx",
   `export const metadata = {
-  title: "MCP Server — B2B Textile Ledger",
+  title: "MCP Server — Free B2B Textile Ledger",
 };
 
 export default function RootLayout({
@@ -72,18 +72,68 @@ export function getSupabase() {
 
 export async function getShop(mcpKey?: string | null) {
   const sb = getSupabase();
-  if (mcpKey) {
-    const { data } = await sb.from("shops").select("*").eq("mcp_key", mcpKey).maybeSingle();
-    if (data) return data;
-  }
-  const { data: firstShop } = await sb.from("shops").select("*").limit(1).maybeSingle();
-  if (firstShop) return firstShop;
+  const cleanKey = (mcpKey || "ravi123").trim().toLowerCase();
 
-  const { data: created } = await sb
+  const { data: matched } = await sb
     .from("shops")
-    .insert({ name: "MCP Server", mcp_key: "ravi123" })
+    .select("*")
+    .ilike("mcp_key", cleanKey)
+    .maybeSingle();
+  if (matched) return matched;
+
+  if (cleanKey === "ravi123") {
+    const { data: firstShop } = await sb.from("shops").select("*").limit(1).maybeSingle();
+    if (firstShop) return firstShop;
+
+    const { data: created } = await sb
+      .from("shops")
+      .insert({ name: "MCP Server", mcp_key: "ravi123" })
+      .select("*")
+      .single();
+    return created;
+  }
+
+  throw new Error(\`Shop key "\${cleanKey}" not found. Create a free shop at /login first.\`);
+}
+
+export async function createFreeShop(shopName: string, requestedKey?: string) {
+  const sb = getSupabase();
+  const cleanName = (shopName || "").trim();
+  if (!cleanName) throw new Error("Please enter a shop name.");
+
+  const slugBase = cleanName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 14) || "shop";
+
+  const cleanKey = (
+    requestedKey?.trim() || \`\${slugBase}-\${Math.floor(1000 + Math.random() * 9000)}\`
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "");
+
+  if (cleanKey.length < 3) {
+    throw new Error("Shop key must be at least 3 characters.");
+  }
+
+  const { data: existing } = await sb
+    .from("shops")
+    .select("*")
+    .ilike("mcp_key", cleanKey)
+    .maybeSingle();
+
+  if (existing) {
+    throw new Error(\`Shop key "\${cleanKey}" is already taken. Try another key.\`);
+  }
+
+  const { data: created, error } = await sb
+    .from("shops")
+    .insert({ name: cleanName, mcp_key: cleanKey })
     .select("*")
     .single();
+
+  if (error) throw new Error(error.message);
   return created;
 }
 
@@ -500,6 +550,7 @@ write(
 import {
   getSupabase,
   getShop,
+  createFreeShop,
   getOrCreateParty,
   getOrCreateItem,
   computeLedgerState,
@@ -538,7 +589,7 @@ export async function GET(req: NextRequest) {
     const state = await computeLedgerState(shop.id);
     return NextResponse.json({ shop, ...state });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 400 });
   }
 }
 
@@ -559,6 +610,18 @@ export async function POST(req: NextRequest) {
         ok: true,
         ack: partyAcks.get(statement_token) || null,
       });
+    }
+
+    if (body.action === "create_shop") {
+      const shop = await createFreeShop(body.shop_name, body.mcp_key);
+      const state = await computeLedgerState(shop.id);
+      return NextResponse.json({ ok: true, shop, state });
+    }
+
+    if (body.action === "login_shop") {
+      const shop = await getShop(body.mcp_key);
+      const state = await computeLedgerState(shop.id);
+      return NextResponse.json({ ok: true, shop, state });
     }
 
     const shop = await getShop(body.key);
@@ -644,7 +707,6 @@ export async function POST(req: NextRequest) {
       const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
       const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
-      // 1. Purchase: Surat Silk Mills (50m red velvet @ ₹500/m = ₹25,000, paid full)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -666,7 +728,6 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 2. Purchase: Shah Textiles (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -688,7 +749,6 @@ export async function POST(req: NextRequest) {
         rate: 340,
       });
 
-      // 3. Sale: Ramesh Traders (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
       const { data: e3 } = await sb
         .from("entries")
         .insert({
@@ -710,7 +770,6 @@ export async function POST(req: NextRequest) {
         rate: 420,
       });
 
-      // 4. Sale: Kiran Boutique (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
       const { data: e4 } = await sb
         .from("entries")
         .insert({
@@ -732,7 +791,6 @@ export async function POST(req: NextRequest) {
         rate: 450,
       });
 
-      // 5. Sale: Mehta Fabrics (5m red velvet @ ₹600/m = ₹3,000, paid ₹0)
       const { data: e5 } = await sb
         .from("entries")
         .insert({
@@ -754,7 +812,6 @@ export async function POST(req: NextRequest) {
         rate: 600,
       });
 
-      // 6. Payment to Shah Textiles: ₹20,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
@@ -859,13 +916,13 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 400 });
   }
 }
 `
 );
 
-// 5. app/api/mcp/route.ts (Universal Polymorphic MCP Parser: handles rate OR total_amount, single item OR items[])
+// 5. app/api/mcp/route.ts
 write(
   "app/api/mcp/route.ts",
   `import { NextRequest, NextResponse } from "next/server";
@@ -1045,7 +1102,6 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     if (error) throw new Error(error.message);
 
-    // Normalize single-item or multi-item input
     let rawLines: Array<{ item_name: string; qty: number; unit?: string; rate?: number; total_amount?: number }> = [];
     if (Array.isArray(items) && items.length > 0) {
       rawLines = items.map((it: any) => ({
@@ -1067,7 +1123,6 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       ];
     }
 
-    // If top-level total_amount was given for a multi-item bill without individual item rates, distribute across total qty
     const totalQtyAll = rawLines.reduce((acc, l) => acc + (Number(l.qty) || 0), 0);
     const hasAnyItemPrice = rawLines.some(
       (l) => (l.rate !== undefined && l.rate > 0) || (l.total_amount !== undefined && l.total_amount > 0)
@@ -1102,7 +1157,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     }
 
     const unpaid = Number((grandTotal - (Number(paid_amount) || 0)).toFixed(2));
-    return \`Draft \${name === "create_sale" ? "Sale" : "Purchase"} saved in Inbox for \${party.name}: \${summaryParts.join(", ")} | Total: ₹\${grandTotal} | Paid: ₹\${paid_amount || 0} | Balance Due: ₹\${unpaid}\`;
+    return \`[\${shop.name}] Draft \${name === "create_sale" ? "Sale" : "Purchase"} saved in Inbox for \${party.name}: \${summaryParts.join(", ")} | Total: ₹\${grandTotal} | Paid: ₹\${paid_amount || 0} | Balance Due: ₹\${unpaid}\`;
   }
 
   if (name === "create_payment") {
@@ -1121,12 +1176,12 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       paid_amount: Number(amount),
       payment_method: method,
     });
-    return \`Draft Payment of ₹\${amount} (\${method}) saved in Inbox for \${matched.name}.\`;
+    return \`[\${shop.name}] Draft Payment of ₹\${amount} (\${method}) saved in Inbox for \${matched.name}.\`;
   }
 
   if (name === "get_stock") {
     const state = await computeLedgerState(shop.id);
-    if (state.stock.length === 0) return "No confirmed stock items yet.";
+    if (state.stock.length === 0) return \`[\${shop.name}] No confirmed stock items yet.\`;
     return state.stock
       .map(
         (s: any) =>
@@ -1141,8 +1196,8 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     const party = state.parties.find((p: any) =>
       p.name.toLowerCase().includes(String(party_name).toLowerCase())
     );
-    if (!party) return \`Party "\${party_name}" not found.\`;
-    return \`\${party.name} (\${party.type.toUpperCase()}): Total Billed ₹\${party.total_billed} | Total Paid ₹\${party.total_paid} | Outstanding Balance: ₹\${party.balance} | Live Statement: \${origin}/s/\${party.statement_token}\`;
+    if (!party) return \`Party "\${party_name}" not found in \${shop.name}.\`;
+    return \`[\${shop.name}] \${party.name} (\${party.type.toUpperCase()}): Total Billed ₹\${party.total_billed} | Total Paid ₹\${party.total_paid} | Outstanding Balance: ₹\${party.balance} | Live Statement: \${origin}/s/\${party.statement_token}\`;
   }
 
   if (name === "list_outstanding") {
@@ -1157,7 +1212,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       customers.length > 0
         ? customers.map((p: any) => \`• \${p.name} [\${p.customer_tier}]: Owes You ₹\${p.balance} (\${origin}/s/\${p.statement_token})\`).join("\\n")
         : "None";
-    return \`=== Vendors You Owe (Total: ₹\${state.kpis.total_payables}) ===\\n\${vText}\\n\\n=== Customers Who Owe You (Total: ₹\${state.kpis.total_receivables}) ===\\n\${cText}\`;
+    return \`=== [\${shop.name}] Vendors You Owe (Total: ₹\${state.kpis.total_payables}) ===\\n\${vText}\\n\\n=== Customers Who Owe You (Total: ₹\${state.kpis.total_receivables}) ===\\n\${cText}\`;
   }
 
   if (name === "get_business_insights") {
@@ -1165,7 +1220,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     const totalSales = state.parties
       .filter((p: any) => p.type === "customer")
       .reduce((acc: number, c: any) => acc + c.total_billed, 0);
-    return \`=== MCP Server Business Insights ===\\n• Total Sales Revenue: ₹\${totalSales}\\n• Total Booked Profit: +₹\${state.kpis.total_profit}\\n• Cash Collected in Hand/Bank: ₹\${state.kpis.total_cash_collected}\\n• Pending Customer Udhaar: ₹\${state.kpis.total_receivables}\\n• Vendor Payables Due: ₹\${state.kpis.total_payables}\\n• Active Stock Value: ₹\${state.kpis.total_stock_value} (At-Risk Deadstock: ₹\${state.kpis.deadstock_value})\`;
+    return \`=== \${shop.name} Business Insights ===\\n• Total Sales Revenue: ₹\${totalSales}\\n• Total Booked Profit: +₹\${state.kpis.total_profit}\\n• Cash Collected in Hand/Bank: ₹\${state.kpis.total_cash_collected}\\n• Pending Customer Udhaar: ₹\${state.kpis.total_receivables}\\n• Vendor Payables Due: ₹\${state.kpis.total_payables}\\n• Active Stock Value: ₹\${state.kpis.total_stock_value} (At-Risk Deadstock: ₹\${state.kpis.deadstock_value})\`;
   }
 
   throw new Error(\`Unknown tool: \${name}\`);
@@ -1180,7 +1235,7 @@ async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | 
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "mcp-server", version: "2.0.0" },
+        serverInfo: { name: "mcp-server", version: "2.1.0" },
       },
     };
   }
@@ -1217,12 +1272,16 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const shop = await getShop(searchParams.get("key"));
-  return NextResponse.json(
-    { name: "MCP Server", status: "live", shop: shop?.name },
-    { headers: CORS_HEADERS }
-  );
+  try {
+    const { searchParams } = new URL(req.url);
+    const shop = await getShop(searchParams.get("key"));
+    return NextResponse.json(
+      { name: "MCP Server", status: "live", shop: shop?.name, mcp_key: shop?.mcp_key },
+      { headers: CORS_HEADERS }
+    );
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 404, headers: CORS_HEADERS });
+  }
 }
 export async function POST(req: NextRequest) {
   try {
@@ -1252,7 +1311,256 @@ export async function DELETE() {
 `
 );
 
-// 6. app/page.tsx (Full Restored UI + Multi-Item Manual Form + Unit Toggles + Editable Drafts)
+// 6. app/login/page.tsx (Free Multi-Shop Signup + Existing Shop Login + Demo Login)
+write(
+  "app/login/page.tsx",
+  `"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [mode, setMode] = useState<"signup" | "signin">("signup");
+  const [shopName, setShopName] = useState("");
+  const [customKey, setCustomKey] = useState("");
+  const [existingKey, setExistingKey] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  function suggestKey(name: string) {
+    setShopName(name);
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 12);
+    if (slug) {
+      setCustomKey(\`\${slug}-101\`);
+    } else {
+      setCustomKey("");
+    }
+  }
+
+  async function handleCreateShop(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/ledger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create_shop",
+          shop_name: shopName,
+          mcp_key: customKey,
+        }),
+      }).then((r) => r.json());
+
+      if (res.error) {
+        setError(res.error);
+        setLoading(false);
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("mcp_admin_auth", "true");
+        localStorage.setItem("mcp_shop_key", res.shop.mcp_key);
+        localStorage.setItem("mcp_shop_name", res.shop.name);
+      }
+      router.push("/");
+    } catch (err: any) {
+      setError(err.message || "Failed to create shop");
+      setLoading(false);
+    }
+  }
+
+  async function handleSignIn(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    const clean = existingKey.trim().toLowerCase();
+    const resolvedKey =
+      clean === "admin@mcpserver.com" || clean === "admin123" || clean === ""
+        ? "ravi123"
+        : clean;
+
+    try {
+      const res = await fetch("/api/ledger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "login_shop",
+          mcp_key: resolvedKey,
+        }),
+      }).then((r) => r.json());
+
+      if (res.error) {
+        setError(res.error);
+        setLoading(false);
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("mcp_admin_auth", "true");
+        localStorage.setItem("mcp_shop_key", res.shop.mcp_key);
+        localStorage.setItem("mcp_shop_name", res.shop.name);
+      }
+      router.push("/");
+    } catch (err: any) {
+      setError(err.message || "Login failed");
+      setLoading(false);
+    }
+  }
+
+  async function loginDemoShop() {
+    setExistingKey("ravi123");
+    if (typeof window !== "undefined") {
+      localStorage.setItem("mcp_admin_auth", "true");
+      localStorage.setItem("mcp_shop_key", "ravi123");
+      localStorage.setItem("mcp_shop_name", "MCP Server");
+    }
+    router.push("/");
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5 shadow-2xl">
+        <div className="space-y-1 text-center">
+          <span className="text-[10px] font-bold uppercase px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+            100% Free Multi-Shop MCP Ledger
+          </span>
+          <h1 className="text-xl font-extrabold pt-1">Connect Your Shop to Claude</h1>
+          <p className="text-xs text-slate-400">
+            Create an isolated textile ledger & get your personal Claude MCP link in 5 seconds.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+          <button
+            type="button"
+            onClick={() => {
+              setMode("signup");
+              setError("");
+            }}
+            className={\`py-2 rounded-lg text-xs font-bold cursor-pointer \${
+              mode === "signup"
+                ? "bg-emerald-500 text-slate-950"
+                : "text-slate-400 hover:text-white"
+            }\`}
+          >
+            ✨ Create Free Shop
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode("signin");
+              setError("");
+            }}
+            className={\`py-2 rounded-lg text-xs font-bold cursor-pointer \${
+              mode === "signin"
+                ? "bg-emerald-500 text-slate-950"
+                : "text-slate-400 hover:text-white"
+            }\`}
+          >
+            🔑 Open Existing Shop
+          </button>
+        </div>
+
+        {error && (
+          <div className="bg-rose-950/70 border border-rose-700 text-rose-200 rounded-xl p-3 text-xs font-medium">
+            {error}
+          </div>
+        )}
+
+        {mode === "signup" ? (
+          <form onSubmit={handleCreateShop} className="space-y-3.5">
+            <div>
+              <label className="text-xs text-slate-300 font-semibold block mb-1">
+                Your Shop / Business Name
+              </label>
+              <input
+                required
+                placeholder="e.g. Lakshmi Silk House"
+                value={shopName}
+                onChange={(e) => suggestKey(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white font-semibold"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-300 font-semibold block mb-1">
+                Choose Your Secret Shop Key (Used for Login & Claude MCP)
+              </label>
+              <input
+                required
+                placeholder="e.g. lakshmi-101"
+                value={customKey}
+                onChange={(e) => setCustomKey(e.target.value)}
+                className="w-full bg-slate-950 border border-emerald-500/50 rounded-xl px-3.5 py-2.5 text-sm text-emerald-300 font-mono"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Your Claude MCP URL will end with{" "}
+                <code className="text-emerald-400">?key={customKey || "your-key"}</code>
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+            >
+              {loading ? "Creating Your Shop..." : "🚀 Create Free Shop & Get MCP Link"}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleSignIn} className="space-y-3.5">
+            <div>
+              <label className="text-xs text-slate-300 font-semibold block mb-1">
+                Enter Your Secret Shop Key
+              </label>
+              <input
+                required
+                placeholder="e.g. lakshmi-101 or ravi123"
+                value={existingKey}
+                onChange={(e) => setExistingKey(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
+            >
+              {loading ? "Opening Shop..." : "🔓 Sign In to My Shop"}
+            </button>
+          </form>
+        )}
+
+        <div className="border-t border-slate-800 pt-3 space-y-2">
+          <button
+            type="button"
+            onClick={loginDemoShop}
+            className="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+          >
+            ⚡ One-Click Demo Shop (Key: ravi123)
+          </button>
+          <Link
+            href="/"
+            className="block text-center text-xs text-slate-400 hover:text-white pt-1"
+          >
+            ← Back to Ledger
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+`
+);
+
+// 7. app/page.tsx (Multi-Shop Aware Dashboard + Instant MCP Link Banner + Full Features)
 write(
   "app/page.tsx",
   `"use client";
@@ -1266,6 +1574,7 @@ export default function HomePage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [shopKey, setShopKey] = useState("ravi123");
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [showDevTools, setShowDevTools] = useState(false);
   const [edits, setEdits] = useState<Record<string, any>>({});
@@ -1287,9 +1596,17 @@ export default function HomePage() {
     { item_name: "sarees", unit: "pcs", qty: "50", total_price: "10000", rate: "200" },
   ]);
 
-  async function loadData() {
-    const res = await fetch("/api/ledger").then((r) => r.json());
-    setData(res);
+  async function loadData(activeKey?: string) {
+    const keyToUse =
+      activeKey ||
+      (typeof window !== "undefined" ? localStorage.getItem("mcp_shop_key") : null) ||
+      "ravi123";
+    const res = await fetch(\`/api/ledger?key=\${encodeURIComponent(keyToUse)}\`).then((r) =>
+      r.json()
+    );
+    if (!res.error) {
+      setData(res);
+    }
     setLoading(false);
     if (typeof window !== "undefined" && res?.parties) {
       const ackMap: Record<string, any> = {};
@@ -1306,11 +1623,14 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    let currentKey = "ravi123";
     if (typeof window !== "undefined") {
       setIsAdmin(localStorage.getItem("mcp_admin_auth") === "true");
+      currentKey = localStorage.getItem("mcp_shop_key") || "ravi123";
+      setShopKey(currentKey);
     }
-    loadData();
-    const timer = setInterval(loadData, 4000);
+    loadData(currentKey);
+    const timer = setInterval(() => loadData(), 4000);
     return () => clearInterval(timer);
   }, []);
 
@@ -1362,6 +1682,7 @@ export default function HomePage() {
     const current = edits[entry.id] || {};
     const payload = {
       action: "update_or_confirm",
+      key: shopKey,
       entry_id: entry.id,
       qty: current.qty !== undefined ? Number(current.qty) : entry.qty,
       rate: current.rate !== undefined ? Number(current.rate) : entry.rate,
@@ -1388,7 +1709,7 @@ export default function HomePage() {
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "delete_entry", entry_id: entryId }),
+      body: JSON.stringify({ action: "delete_entry", key: shopKey, entry_id: entryId }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setBusyId(null);
@@ -1396,13 +1717,13 @@ export default function HomePage() {
 
   async function handleResetAll() {
     if (!isAdmin) return;
-    if (!confirm("Reset all bills, parties, and stock?")) return;
+    if (!confirm("Reset all bills, parties, and stock for this shop?")) return;
     setLoading(true);
     setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "reset_all" }),
+      body: JSON.stringify({ action: "reset_all", key: shopKey }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setLoading(false);
@@ -1415,7 +1736,7 @@ export default function HomePage() {
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "seed_demo" }),
+      body: JSON.stringify({ action: "seed_demo", key: shopKey }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setLoading(false);
@@ -1429,6 +1750,7 @@ export default function HomePage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "create_draft",
+        key: shopKey,
         type: formType,
         party_name: partyName,
         paid_amount: Number(paidAmount) || 0,
@@ -1444,18 +1766,25 @@ export default function HomePage() {
       }),
     });
     setShowQuickAdd(false);
-    await loadData();
+    await loadData(shopKey);
   }
 
   function handleLogout() {
-    if (typeof window !== "undefined") localStorage.removeItem("mcp_admin_auth");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("mcp_admin_auth");
+      localStorage.setItem("mcp_shop_key", "ravi123");
+      localStorage.removeItem("mcp_shop_name");
+    }
     setIsAdmin(false);
+    setShopKey("ravi123");
     setShowAdminModal(false);
     setShowQuickAdd(false);
+    loadData("ravi123");
   }
 
   function copyMcpUrl() {
-    const url = \`\${window.location.origin}/api/mcp?key=ravi123\`;
+    const activeKey = data?.shop?.mcp_key || shopKey || "ravi123";
+    const url = \`\${window.location.origin}/api/mcp?key=\${activeKey}\`;
     navigator.clipboard.writeText(url);
     setCopiedMcp(true);
     setTimeout(() => setCopiedMcp(false), 2000);
@@ -1468,6 +1797,8 @@ export default function HomePage() {
     setTimeout(() => setCopiedToken(null), 2000);
   }
 
+  const activeShopName = data?.shop?.name || "MCP Server";
+  const activeMcpKey = data?.shop?.mcp_key || shopKey || "ravi123";
   const drafts = data?.drafts || [];
   const confirmed = data?.confirmed || [];
   const parties = data?.parties || [];
@@ -1522,13 +1853,15 @@ export default function HomePage() {
           <div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-base font-bold tracking-tight">MCP Server</h1>
+              <h1 className="text-base font-bold tracking-tight truncate max-w-[160px]">
+                {activeShopName}
+              </h1>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
-                No AI Inside
+                Key: {activeMcpKey}
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Claude MCP Textile Ledger • Exact Code Math
+              Free Multi-Shop Claude MCP Ledger • Exact Math
             </p>
           </div>
 
@@ -1545,19 +1878,16 @@ export default function HomePage() {
                 className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Ravi (Admin) ⚙️
+                MCP Link ⚙️
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 font-medium">
-                👁️ Read-Only
-              </span>
               <Link
                 href="/login"
                 className="text-[11px] bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl transition"
               >
-                🔒 Sign In
+                ✨ Create / Open Shop
               </Link>
             </div>
           )}
@@ -1565,20 +1895,45 @@ export default function HomePage() {
       </header>
 
       <main className="w-full max-w-md px-4 pt-3 space-y-4">
-        {!isAdmin && (
+        {!isAdmin ? (
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
             <div className="pr-2">
-              <p className="font-semibold text-slate-200">🔒 Guest Read-Only Mode</p>
+              <p className="font-semibold text-slate-200">✨ Create Your Own Free Shop Ledger</p>
               <p className="text-[11px] text-slate-400">
-                Sign in as Admin to confirm drafts or manage shop keys.
+                Viewing demo shop. Sign in or create your own free shop to connect Claude.
               </p>
             </div>
             <Link
               href="/login"
-              className="shrink-0 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold px-3 py-1.5 rounded-lg text-[11px]"
+              className="shrink-0 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-[11px]"
             >
-              Admin Login →
+              Get Free MCP →
             </Link>
+          </div>
+        ) : (
+          <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
+            <div className="truncate pr-2">
+              <span className="text-[10px] text-slate-400 block">
+                Your Claude MCP Connector URL ({activeShopName}):
+              </span>
+              <code className="text-[11px] text-emerald-400 font-mono">
+                /api/mcp?key={activeMcpKey}
+              </code>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={copyMcpUrl}
+                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1.5 rounded-lg text-[11px] cursor-pointer"
+              >
+                {copiedMcp ? "✓ Copied!" : "Copy URL"}
+              </button>
+              <Link
+                href="/login"
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded-lg text-[11px]"
+              >
+                Switch
+              </Link>
+            </div>
           </div>
         )}
 
@@ -1875,7 +2230,7 @@ export default function HomePage() {
 
         {loading && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-            Loading MCP Server ledger...
+            Loading shop ledger...
           </div>
         )}
 
@@ -1894,7 +2249,7 @@ export default function HomePage() {
                 <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 text-center space-y-1">
                   <p className="text-xs text-slate-300 font-medium">No unconfirmed drafts</p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment to queue a draft here.
+                    Connect Claude to <code className="text-emerald-400">/api/mcp?key={activeMcpKey}</code> or click + Entry.
                   </p>
                 </div>
               )}
@@ -2096,7 +2451,7 @@ export default function HomePage() {
                         href="/login"
                         className="block w-full text-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold py-2.5 rounded-xl text-xs"
                       >
-                        🔒 Sign In as Admin to Edit & Confirm Draft
+                        🔒 Sign In to Edit & Confirm Draft
                       </Link>
                     )}
                   </div>
@@ -2333,7 +2688,7 @@ export default function HomePage() {
                       ? \`\${window.location.origin}/s/\${p.statement_token}\`
                       : \`/s/\${p.statement_token}\`;
                   const waText = encodeURIComponent(
-                    \`Hi \${p.name}, here is your live verified account statement with MCP Server (Balance: ₹\${Number(
+                    \`Hi \${p.name}, here is your live verified account statement with \${activeShopName} (Balance: ₹\${Number(
                       p.balance
                     ).toLocaleString("en-IN")}): \${statementUrl}\`
                   );
@@ -2431,7 +2786,7 @@ export default function HomePage() {
                       ? \`\${window.location.origin}/s/\${p.statement_token}\`
                       : \`/s/\${p.statement_token}\`;
                   const waText = encodeURIComponent(
-                    \`Hi \${p.name}, here is your live verified account statement with MCP Server (Balance: ₹\${Number(
+                    \`Hi \${p.name}, here is your live verified account statement with \${activeShopName} (Balance: ₹\${Number(
                       p.balance
                     ).toLocaleString("en-IN")}): \${statementUrl}\`
                   );
@@ -2638,7 +2993,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 4: INSIGHTS (ALL 3 RICH SECTIONS RESTORED) */}
+        {/* TAB 4: INSIGHTS */}
         {!loading && tab === "insights" && (
           <div className="space-y-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
@@ -2827,17 +3182,17 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Admin Settings Modal */}
+      {/* Admin & Multi-Shop Settings Modal */}
       {isAdmin && showAdminModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  ● Admin Session Active
+                  ● Active Shop Ledger
                 </span>
-                <h3 className="text-base font-bold mt-1">Ravi — Shop Owner Controls</h3>
-                <p className="text-xs text-slate-400">admin@mcpserver.com</p>
+                <h3 className="text-base font-bold mt-1">{activeShopName}</h3>
+                <p className="text-xs text-slate-400">Shop Key: {activeMcpKey}</p>
               </div>
               <button
                 onClick={() => setShowAdminModal(false)}
@@ -2852,7 +3207,9 @@ export default function HomePage() {
                 Your Private Claude MCP Connector URL
               </label>
               <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
-                <code className="text-emerald-400 truncate mr-2">/api/mcp?key=ravi123</code>
+                <code className="text-emerald-400 truncate mr-2">
+                  /api/mcp?key={activeMcpKey}
+                </code>
                 <button
                   onClick={copyMcpUrl}
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer"
@@ -2860,6 +3217,10 @@ export default function HomePage() {
                   {copiedMcp ? "✓ Copied!" : "Copy Full URL"}
                 </button>
               </div>
+              <p className="text-[11px] text-slate-400">
+                Paste this URL in Claude Settings → Connectors so Claude writes directly to{" "}
+                <strong>{activeShopName}</strong>.
+              </p>
             </div>
 
             <div className="border-t border-slate-800 pt-3">
@@ -2878,30 +3239,30 @@ export default function HomePage() {
                     onClick={handleSeedDemo}
                     className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
                   >
-                    ⚡ Seed Sample Shop
+                    ⚡ Seed Sample Data
                   </button>
                   <button
                     onClick={handleResetAll}
                     className="bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/60 text-rose-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
                   >
-                    🗑️ Reset All Data
+                    🗑️ Reset This Shop
                   </button>
                 </div>
               )}
             </div>
 
             <div className="flex gap-2 pt-1">
+              <Link
+                href="/login"
+                className="flex-1 text-center bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold py-2.5 rounded-xl text-xs"
+              >
+                + Create / Switch Shop
+              </Link>
               <button
                 onClick={handleLogout}
-                className="flex-1 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 font-semibold py-2.5 rounded-xl text-xs cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
               >
                 Sign Out
-              </button>
-              <button
-                onClick={() => setShowAdminModal(false)}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-bold cursor-pointer"
-              >
-                Done
               </button>
             </div>
           </div>
@@ -2919,7 +3280,7 @@ export default function HomePage() {
                     ? "PAYMENT RECEIPT"
                     : \`\${invoiceEntry.type.toUpperCase()} INVOICE\`}
                 </span>
-                <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
+                <h3 className="text-lg font-bold mt-1">{activeShopName}</h3>
               </div>
               <button
                 onClick={() => setInvoiceEntry(null)}
@@ -3041,4 +3402,4 @@ export default function HomePage() {
 `
 );
 
-console.log("COMPLETE RESTORATION & UNIVERSAL MCP FIX APPLIED!");
+console.log("FREE MULTI-SHOP SAAS & ISOLATED MCP KEYS APPLIED!");

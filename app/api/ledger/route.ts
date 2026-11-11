@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getSupabase,
   getShop,
+  createFreeShop,
   getOrCreateParty,
   getOrCreateItem,
   computeLedgerState,
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
     const state = await computeLedgerState(shop.id);
     return NextResponse.json({ shop, ...state });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 400 });
   }
 }
 
@@ -61,6 +62,18 @@ export async function POST(req: NextRequest) {
         ok: true,
         ack: partyAcks.get(statement_token) || null,
       });
+    }
+
+    if (body.action === "create_shop") {
+      const shop = await createFreeShop(body.shop_name, body.mcp_key);
+      const state = await computeLedgerState(shop.id);
+      return NextResponse.json({ ok: true, shop, state });
+    }
+
+    if (body.action === "login_shop") {
+      const shop = await getShop(body.mcp_key);
+      const state = await computeLedgerState(shop.id);
+      return NextResponse.json({ ok: true, shop, state });
     }
 
     const shop = await getShop(body.key);
@@ -146,7 +159,6 @@ export async function POST(req: NextRequest) {
       const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
       const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
-      // 1. Purchase: Surat Silk Mills (50m red velvet @ ₹500/m = ₹25,000, paid full)
       const { data: e1 } = await sb
         .from("entries")
         .insert({
@@ -168,7 +180,6 @@ export async function POST(req: NextRequest) {
         rate: 500,
       });
 
-      // 2. Purchase: Shah Textiles (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
       const { data: e2 } = await sb
         .from("entries")
         .insert({
@@ -190,7 +201,6 @@ export async function POST(req: NextRequest) {
         rate: 340,
       });
 
-      // 3. Sale: Ramesh Traders (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
       const { data: e3 } = await sb
         .from("entries")
         .insert({
@@ -212,7 +222,6 @@ export async function POST(req: NextRequest) {
         rate: 420,
       });
 
-      // 4. Sale: Kiran Boutique (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
       const { data: e4 } = await sb
         .from("entries")
         .insert({
@@ -234,7 +243,6 @@ export async function POST(req: NextRequest) {
         rate: 450,
       });
 
-      // 5. Sale: Mehta Fabrics (5m red velvet @ ₹600/m = ₹3,000, paid ₹0)
       const { data: e5 } = await sb
         .from("entries")
         .insert({
@@ -256,7 +264,6 @@ export async function POST(req: NextRequest) {
         rate: 600,
       });
 
-      // 6. Payment to Shah Textiles: ₹20,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
@@ -361,6 +368,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message }, { status: 400 });
   }
 }

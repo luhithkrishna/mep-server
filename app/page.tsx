@@ -9,6 +9,7 @@ export default function HomePage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [shopKey, setShopKey] = useState("ravi123");
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [showDevTools, setShowDevTools] = useState(false);
   const [edits, setEdits] = useState<Record<string, any>>({});
@@ -30,9 +31,17 @@ export default function HomePage() {
     { item_name: "sarees", unit: "pcs", qty: "50", total_price: "10000", rate: "200" },
   ]);
 
-  async function loadData() {
-    const res = await fetch("/api/ledger").then((r) => r.json());
-    setData(res);
+  async function loadData(activeKey?: string) {
+    const keyToUse =
+      activeKey ||
+      (typeof window !== "undefined" ? localStorage.getItem("mcp_shop_key") : null) ||
+      "ravi123";
+    const res = await fetch(`/api/ledger?key=${encodeURIComponent(keyToUse)}`).then((r) =>
+      r.json()
+    );
+    if (!res.error) {
+      setData(res);
+    }
     setLoading(false);
     if (typeof window !== "undefined" && res?.parties) {
       const ackMap: Record<string, any> = {};
@@ -49,11 +58,14 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    let currentKey = "ravi123";
     if (typeof window !== "undefined") {
       setIsAdmin(localStorage.getItem("mcp_admin_auth") === "true");
+      currentKey = localStorage.getItem("mcp_shop_key") || "ravi123";
+      setShopKey(currentKey);
     }
-    loadData();
-    const timer = setInterval(loadData, 4000);
+    loadData(currentKey);
+    const timer = setInterval(() => loadData(), 4000);
     return () => clearInterval(timer);
   }, []);
 
@@ -105,6 +117,7 @@ export default function HomePage() {
     const current = edits[entry.id] || {};
     const payload = {
       action: "update_or_confirm",
+      key: shopKey,
       entry_id: entry.id,
       qty: current.qty !== undefined ? Number(current.qty) : entry.qty,
       rate: current.rate !== undefined ? Number(current.rate) : entry.rate,
@@ -131,7 +144,7 @@ export default function HomePage() {
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "delete_entry", entry_id: entryId }),
+      body: JSON.stringify({ action: "delete_entry", key: shopKey, entry_id: entryId }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setBusyId(null);
@@ -139,13 +152,13 @@ export default function HomePage() {
 
   async function handleResetAll() {
     if (!isAdmin) return;
-    if (!confirm("Reset all bills, parties, and stock?")) return;
+    if (!confirm("Reset all bills, parties, and stock for this shop?")) return;
     setLoading(true);
     setShowAdminModal(false);
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "reset_all" }),
+      body: JSON.stringify({ action: "reset_all", key: shopKey }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setLoading(false);
@@ -158,7 +171,7 @@ export default function HomePage() {
     const res = await fetch("/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "seed_demo" }),
+      body: JSON.stringify({ action: "seed_demo", key: shopKey }),
     }).then((r) => r.json());
     if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
     setLoading(false);
@@ -172,6 +185,7 @@ export default function HomePage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "create_draft",
+        key: shopKey,
         type: formType,
         party_name: partyName,
         paid_amount: Number(paidAmount) || 0,
@@ -187,18 +201,25 @@ export default function HomePage() {
       }),
     });
     setShowQuickAdd(false);
-    await loadData();
+    await loadData(shopKey);
   }
 
   function handleLogout() {
-    if (typeof window !== "undefined") localStorage.removeItem("mcp_admin_auth");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("mcp_admin_auth");
+      localStorage.setItem("mcp_shop_key", "ravi123");
+      localStorage.removeItem("mcp_shop_name");
+    }
     setIsAdmin(false);
+    setShopKey("ravi123");
     setShowAdminModal(false);
     setShowQuickAdd(false);
+    loadData("ravi123");
   }
 
   function copyMcpUrl() {
-    const url = `${window.location.origin}/api/mcp?key=ravi123`;
+    const activeKey = data?.shop?.mcp_key || shopKey || "ravi123";
+    const url = `${window.location.origin}/api/mcp?key=${activeKey}`;
     navigator.clipboard.writeText(url);
     setCopiedMcp(true);
     setTimeout(() => setCopiedMcp(false), 2000);
@@ -211,6 +232,8 @@ export default function HomePage() {
     setTimeout(() => setCopiedToken(null), 2000);
   }
 
+  const activeShopName = data?.shop?.name || "MCP Server";
+  const activeMcpKey = data?.shop?.mcp_key || shopKey || "ravi123";
   const drafts = data?.drafts || [];
   const confirmed = data?.confirmed || [];
   const parties = data?.parties || [];
@@ -265,13 +288,15 @@ export default function HomePage() {
           <div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-base font-bold tracking-tight">MCP Server</h1>
+              <h1 className="text-base font-bold tracking-tight truncate max-w-[160px]">
+                {activeShopName}
+              </h1>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
-                No AI Inside
+                Key: {activeMcpKey}
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Claude MCP Textile Ledger • Exact Code Math
+              Free Multi-Shop Claude MCP Ledger • Exact Math
             </p>
           </div>
 
@@ -288,19 +313,16 @@ export default function HomePage() {
                 className="text-[11px] bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 px-2.5 py-1.5 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Ravi (Admin) ⚙️
+                MCP Link ⚙️
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 font-medium">
-                👁️ Read-Only
-              </span>
               <Link
                 href="/login"
                 className="text-[11px] bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-xl transition"
               >
-                🔒 Sign In
+                ✨ Create / Open Shop
               </Link>
             </div>
           )}
@@ -308,20 +330,45 @@ export default function HomePage() {
       </header>
 
       <main className="w-full max-w-md px-4 pt-3 space-y-4">
-        {!isAdmin && (
+        {!isAdmin ? (
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs">
             <div className="pr-2">
-              <p className="font-semibold text-slate-200">🔒 Guest Read-Only Mode</p>
+              <p className="font-semibold text-slate-200">✨ Create Your Own Free Shop Ledger</p>
               <p className="text-[11px] text-slate-400">
-                Sign in as Admin to confirm drafts or manage shop keys.
+                Viewing demo shop. Sign in or create your own free shop to connect Claude.
               </p>
             </div>
             <Link
               href="/login"
-              className="shrink-0 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold px-3 py-1.5 rounded-lg text-[11px]"
+              className="shrink-0 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-[11px]"
             >
-              Admin Login →
+              Get Free MCP →
             </Link>
+          </div>
+        ) : (
+          <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl px-3 py-2 flex items-center justify-between text-xs">
+            <div className="truncate pr-2">
+              <span className="text-[10px] text-slate-400 block">
+                Your Claude MCP Connector URL ({activeShopName}):
+              </span>
+              <code className="text-[11px] text-emerald-400 font-mono">
+                /api/mcp?key={activeMcpKey}
+              </code>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={copyMcpUrl}
+                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1.5 rounded-lg text-[11px] cursor-pointer"
+              >
+                {copiedMcp ? "✓ Copied!" : "Copy URL"}
+              </button>
+              <Link
+                href="/login"
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded-lg text-[11px]"
+              >
+                Switch
+              </Link>
+            </div>
           </div>
         )}
 
@@ -618,7 +665,7 @@ export default function HomePage() {
 
         {loading && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400">
-            Loading MCP Server ledger...
+            Loading shop ledger...
           </div>
         )}
 
@@ -637,7 +684,7 @@ export default function HomePage() {
                 <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 text-center space-y-1">
                   <p className="text-xs text-slate-300 font-medium">No unconfirmed drafts</p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment to queue a draft here.
+                    Connect Claude to <code className="text-emerald-400">/api/mcp?key={activeMcpKey}</code> or click + Entry.
                   </p>
                 </div>
               )}
@@ -839,7 +886,7 @@ export default function HomePage() {
                         href="/login"
                         className="block w-full text-center bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold py-2.5 rounded-xl text-xs"
                       >
-                        🔒 Sign In as Admin to Edit & Confirm Draft
+                        🔒 Sign In to Edit & Confirm Draft
                       </Link>
                     )}
                   </div>
@@ -1076,7 +1123,7 @@ export default function HomePage() {
                       ? `${window.location.origin}/s/${p.statement_token}`
                       : `/s/${p.statement_token}`;
                   const waText = encodeURIComponent(
-                    `Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(
+                    `Hi ${p.name}, here is your live verified account statement with ${activeShopName} (Balance: ₹${Number(
                       p.balance
                     ).toLocaleString("en-IN")}): ${statementUrl}`
                   );
@@ -1174,7 +1221,7 @@ export default function HomePage() {
                       ? `${window.location.origin}/s/${p.statement_token}`
                       : `/s/${p.statement_token}`;
                   const waText = encodeURIComponent(
-                    `Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(
+                    `Hi ${p.name}, here is your live verified account statement with ${activeShopName} (Balance: ₹${Number(
                       p.balance
                     ).toLocaleString("en-IN")}): ${statementUrl}`
                   );
@@ -1381,7 +1428,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 4: INSIGHTS (ALL 3 RICH SECTIONS RESTORED) */}
+        {/* TAB 4: INSIGHTS */}
         {!loading && tab === "insights" && (
           <div className="space-y-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
@@ -1570,17 +1617,17 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Admin Settings Modal */}
+      {/* Admin & Multi-Shop Settings Modal */}
       {isAdmin && showAdminModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  ● Admin Session Active
+                  ● Active Shop Ledger
                 </span>
-                <h3 className="text-base font-bold mt-1">Ravi — Shop Owner Controls</h3>
-                <p className="text-xs text-slate-400">admin@mcpserver.com</p>
+                <h3 className="text-base font-bold mt-1">{activeShopName}</h3>
+                <p className="text-xs text-slate-400">Shop Key: {activeMcpKey}</p>
               </div>
               <button
                 onClick={() => setShowAdminModal(false)}
@@ -1595,7 +1642,9 @@ export default function HomePage() {
                 Your Private Claude MCP Connector URL
               </label>
               <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
-                <code className="text-emerald-400 truncate mr-2">/api/mcp?key=ravi123</code>
+                <code className="text-emerald-400 truncate mr-2">
+                  /api/mcp?key={activeMcpKey}
+                </code>
                 <button
                   onClick={copyMcpUrl}
                   className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer"
@@ -1603,6 +1652,10 @@ export default function HomePage() {
                   {copiedMcp ? "✓ Copied!" : "Copy Full URL"}
                 </button>
               </div>
+              <p className="text-[11px] text-slate-400">
+                Paste this URL in Claude Settings → Connectors so Claude writes directly to{" "}
+                <strong>{activeShopName}</strong>.
+              </p>
             </div>
 
             <div className="border-t border-slate-800 pt-3">
@@ -1621,30 +1674,30 @@ export default function HomePage() {
                     onClick={handleSeedDemo}
                     className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
                   >
-                    ⚡ Seed Sample Shop
+                    ⚡ Seed Sample Data
                   </button>
                   <button
                     onClick={handleResetAll}
                     className="bg-rose-950/60 hover:bg-rose-900/80 border border-rose-800/60 text-rose-300 font-bold py-2 rounded-xl text-xs cursor-pointer"
                   >
-                    🗑️ Reset All Data
+                    🗑️ Reset This Shop
                   </button>
                 </div>
               )}
             </div>
 
             <div className="flex gap-2 pt-1">
+              <Link
+                href="/login"
+                className="flex-1 text-center bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold py-2.5 rounded-xl text-xs"
+              >
+                + Create / Switch Shop
+              </Link>
               <button
                 onClick={handleLogout}
-                className="flex-1 bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 font-semibold py-2.5 rounded-xl text-xs cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
               >
                 Sign Out
-              </button>
-              <button
-                onClick={() => setShowAdminModal(false)}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-bold cursor-pointer"
-              >
-                Done
               </button>
             </div>
           </div>
@@ -1662,7 +1715,7 @@ export default function HomePage() {
                     ? "PAYMENT RECEIPT"
                     : `${invoiceEntry.type.toUpperCase()} INVOICE`}
                 </span>
-                <h3 className="text-lg font-bold mt-1">MCP Server Textiles</h3>
+                <h3 className="text-lg font-bold mt-1">{activeShopName}</h3>
               </div>
               <button
                 onClick={() => setInvoiceEntry(null)}
