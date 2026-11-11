@@ -30,6 +30,7 @@ const TOOLS = [
         bill_no: { type: "string", description: "Optional bill or invoice number, e.g. '4521'" },
         paid_amount: { type: "number", description: "Amount paid upfront in INR (0 if on credit)" },
         due_days: { type: "number", description: "Credit due days, e.g. 30" },
+        days_ago: { type: "number", description: "Optional: if purchased in the past (e.g. 45 days ago)" },
         idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
       },
       required: ["party_name", "item_name", "qty", "rate"],
@@ -49,6 +50,7 @@ const TOOLS = [
         rate: { type: "number", description: "Rate per unit in INR (optional if total_amount is given)" },
         paid_amount: { type: "number", description: "Amount customer paid now in INR, e.g. 2000" },
         due_days: { type: "number", description: "Optional credit due days" },
+        days_ago: { type: "number", description: "Optional: if sold in the past (e.g. 10 days ago)" },
         idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
       },
       required: ["party_name", "item_name", "qty"],
@@ -72,7 +74,7 @@ const TOOLS = [
   {
     name: "get_stock",
     description:
-      "Get exact current stock quantity, weighted-average cost per unit, sell-through %, and deadstock status from confirmed ledger entries.",
+      "Get exact current stock quantity, weighted-average cost per unit, sell-through %, age in days, and deadstock status from confirmed ledger entries.",
     inputSchema: {
       type: "object",
       properties: {
@@ -83,7 +85,7 @@ const TOOLS = [
   {
     name: "get_party_balance",
     description:
-      "Get exact balance owed to a vendor or owed by a customer from confirmed entries, plus their live statement link.",
+      "Get exact balance owed to a vendor or owed by a customer from confirmed entries, plus customer tier and live statement link.",
     inputSchema: {
       type: "object",
       properties: {
@@ -104,7 +106,7 @@ const TOOLS = [
   {
     name: "get_business_insights",
     description:
-      "Analyze deadstock/slow-moving inventory (locked capital & sell-through rate) and customer purchasing/profit trends using exact deterministic math.",
+      "Analyze working capital coverage, Booked vs Cash-Realized Profit, Customer Buying & Price Realization Matrix (VIP Cash vs High-Margin Credit), and Deadstock Liquidation math.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -127,6 +129,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       bill_no,
       paid_amount = 0,
       due_days,
+      days_ago,
       idempotency_key,
     } = args || {};
 
@@ -144,8 +147,12 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     const party = await getOrCreateParty(shop.id, party_name, "vendor");
     const item = await getOrCreateItem(shop.id, item_name, unit);
+    const entryDate =
+      days_ago && Number(days_ago) > 0
+        ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+        : new Date().toISOString();
     const dueDate = due_days
-      ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
+      ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
       : null;
 
     const { data: entry, error } = await sb
@@ -155,6 +162,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
         type: "purchase",
         party_id: party.id,
         bill_no: bill_no ? String(bill_no) : null,
+        date: entryDate,
         due_date: dueDate,
         status: "draft",
         paid_amount: Number(paid_amount) || 0,
@@ -195,6 +203,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       rate,
       paid_amount = 0,
       due_days,
+      days_ago,
       idempotency_key,
     } = args || {};
 
@@ -219,8 +228,12 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     const party = await getOrCreateParty(shop.id, party_name, "customer");
     const item = await getOrCreateItem(shop.id, item_name, "m");
+    const entryDate =
+      days_ago && Number(days_ago) > 0
+        ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+        : new Date().toISOString();
     const dueDate = due_days
-      ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
+      ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
       : null;
 
     const { data: entry, error } = await sb
@@ -229,6 +242,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
         shop_id: shop.id,
         type: "sale",
         party_id: party.id,
+        date: entryDate,
         due_date: dueDate,
         status: "draft",
         paid_amount: Number(paid_amount) || 0,
@@ -319,7 +333,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     return list
       .map(
         (s: any) =>
-          `• ${s.name}: ${s.stock_qty} ${s.unit} left (In: ${s.purchased_qty} ${s.unit}, Sold: ${s.sold_qty} ${s.unit} [${s.sell_through_pct}%], Avg Cost: ₹${s.avg_cost}/${s.unit}, Value: ₹${s.stock_value.toLocaleString("en-IN")}, Status: ${s.stock_status})`
+          `• ${s.name}: ${s.stock_qty} ${s.unit} left (In: ${s.purchased_qty} ${s.unit}, Sold: ${s.sold_qty} ${s.unit} [${s.sell_through_pct}%], Avg Cost: ₹${s.avg_cost}/${s.unit}, Locked Capital: ₹${s.stock_value.toLocaleString("en-IN")} [${s.locked_share_pct}% of stock], Unsold Age: ${s.age_days}d, Status: ${s.stock_status})`
       )
       .join("\n");
   }
@@ -344,11 +358,11 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
     return [
       whoOwes,
-      `- Party Type: ${party.type}`,
-      `- Total Confirmed Billed: ₹${party.total_billed.toLocaleString("en-IN")}`,
+      `- Party Type: ${party.type}${party.type === "customer" ? ` (${party.customer_tier})` : ""}`,
+      `- Total Confirmed Billed: ₹${party.total_billed.toLocaleString("en-IN")} (AOV: ₹${party.aov.toLocaleString("en-IN")})`,
       `- Total Confirmed Paid: ₹${party.total_paid.toLocaleString("en-IN")} (${party.payment_ratio_pct}% paid)`,
       party.type === "customer"
-        ? `- Exact Profit Generated: +₹${party.total_profit.toLocaleString("en-IN")} (${party.profit_margin_pct}% margin)`
+        ? `- Booked Profit: +₹${party.total_profit.toLocaleString("en-IN")} (${party.profit_margin_pct}% margin) | Cash-Realized Profit: ₹${party.cash_realized_profit.toLocaleString("en-IN")}`
         : null,
       `- Live Public Statement Link (no login required): ${statementUrl}`,
     ]
@@ -381,7 +395,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
     } else {
       for (const c of customers) {
         lines.push(
-          `   • ${c.name}: ₹${c.balance.toLocaleString("en-IN")} | Live Statement: ${origin}/s/${c.statement_token}`
+          `   • ${c.name} [${c.customer_tier}]: ₹${c.balance.toLocaleString("en-IN")} | Live Statement: ${origin}/s/${c.statement_token}`
         );
       }
     }
@@ -398,29 +412,31 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       .sort((a: any, b: any) => b.total_profit - a.total_profit);
 
     const lines: string[] = [
-      "=== MCP Server Business Insights (100% Deterministic Math) ===",
-      `• Total Realized Profit: +₹${state.kpis.total_profit.toLocaleString("en-IN")}`,
-      `• Total Stock Value: ₹${state.kpis.total_stock_value.toLocaleString("en-IN")} (At-Risk / Deadstock Capital: ₹${state.kpis.deadstock_value.toLocaleString("en-IN")})`,
-      "\n1. Deadstock & Slow-Moving Inventory:",
+      "=== MCP Server Business Insights (100% Deterministic Code Math) ===",
+      "\n1. Profit Quality & Working Capital Health:",
+      `   • Booked Profit (Paper): +₹${state.kpis.total_profit.toLocaleString("en-IN")}`,
+      `   • Cash-Realized Profit (In Hand): ₹${state.kpis.cash_realized_profit.toLocaleString("en-IN")} (₹${state.kpis.uncollected_profit.toLocaleString("en-IN")} locked in customer credit)`,
+      `   • Vendor Payables Due: ₹${state.kpis.total_payables.toLocaleString("en-IN")} vs Liquid Coverage (Receivables + Active Stock): ₹${(state.kpis.total_receivables + state.kpis.active_stock_value).toLocaleString("en-IN")} (${state.kpis.coverage_ratio}x coverage)`,
+      "\n2. Customer Buying Behavior & Price Realization Matrix:",
     ];
 
-    if (deadOrSlow.length === 0) {
-      lines.push("   • None! All items have healthy sell-through (>25%).");
-    } else {
-      for (const s of deadOrSlow) {
-        lines.push(
-          `   • [${s.stock_status}] ${s.name}: ${s.stock_qty} ${s.unit} unsold (${s.sell_through_pct}% sold) -> ₹${s.stock_value.toLocaleString("en-IN")} capital locked`
-        );
-      }
-    }
-
-    lines.push("\n2. Customer Purchasing & Profit Trends:");
     if (customers.length === 0) {
       lines.push("   • No confirmed customer sales yet.");
     } else {
       for (const c of customers) {
         lines.push(
-          `   • ${c.name}: Profit +₹${c.total_profit.toLocaleString("en-IN")} (${c.profit_margin_pct}% margin) | Orders: ${c.order_count} | Top Item: ${c.favorite_item || "N/A"} | Payment Discipline: ${c.payment_ratio_pct}% paid`
+          `   • ${c.name} [${c.customer_tier}]: Pays avg ₹${c.avg_rate_paid}/m | AOV: ₹${c.aov.toLocaleString("en-IN")} | Booked Profit: +₹${c.total_profit.toLocaleString("en-IN")} (${c.profit_margin_pct}%) | Cash Profit: ₹${c.cash_realized_profit.toLocaleString("en-IN")} | Credit Discipline: ${c.payment_ratio_pct}% paid`
+        );
+      }
+    }
+
+    lines.push("\n3. Deadstock Age & Liquidation Plan:");
+    if (deadOrSlow.length === 0) {
+      lines.push("   • None! All items have healthy sell-through (>25%).");
+    } else {
+      for (const s of deadOrSlow) {
+        lines.push(
+          `   • [${s.stock_status} • ${s.age_days}d old] ${s.name}: ${s.stock_qty} ${s.unit} unsold (${s.locked_share_pct}% of shop stock value = ₹${s.stock_value.toLocaleString("en-IN")} locked). Break-even clearance rate: ₹${s.clearance_breakeven_rate}/${s.unit} (10% markdown rate: ₹${s.clearance_10pct_rate}/${s.unit} recovers ₹${Math.round(s.stock_qty * s.clearance_10pct_rate).toLocaleString("en-IN")})`
         );
       }
     }

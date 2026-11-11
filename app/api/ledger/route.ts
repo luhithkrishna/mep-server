@@ -126,40 +126,24 @@ export async function POST(req: NextRequest) {
 
       const shah = await getOrCreateParty(shop.id, "Shah Textiles", "vendor");
       const surat = await getOrCreateParty(shop.id, "Surat Silk Mills", "vendor");
+      const ramesh = await getOrCreateParty(shop.id, "Ramesh Traders", "customer");
       const kiran = await getOrCreateParty(shop.id, "Kiran Boutique", "customer");
 
       const cotton = await getOrCreateItem(shop.id, "white cotton", "m");
       const velvet = await getOrCreateItem(shop.id, "red velvet", "m");
 
-      const due30 = new Date(Date.now() + 30 * 86400000).toISOString();
+      const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
+      const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
+      // 1. 45 days ago: Deadstock Purchase (50m red velvet @ ₹500/m = ₹25,000, 0 sold)
       const { data: e1 } = await sb
-        .from("entries")
-        .insert({
-          shop_id: shop.id,
-          type: "purchase",
-          party_id: shah.id,
-          bill_no: "4521",
-          due_date: due30,
-          status: "confirmed",
-          paid_amount: 0,
-        })
-        .select("*")
-        .single();
-      await sb.from("entry_lines").insert({
-        entry_id: e1.id,
-        item_id: cotton.id,
-        qty: 200,
-        rate: 310,
-      });
-
-      const { data: e2 } = await sb
         .from("entries")
         .insert({
           shop_id: shop.id,
           type: "purchase",
           party_id: surat.id,
           bill_no: "8810",
+          date: daysAgo(45),
           status: "confirmed",
           paid_amount: 25000,
           payment_method: "Bank",
@@ -167,36 +151,107 @@ export async function POST(req: NextRequest) {
         .select("*")
         .single();
       await sb.from("entry_lines").insert({
-        entry_id: e2.id,
+        entry_id: e1.id,
         item_id: velvet.id,
         qty: 50,
         rate: 500,
       });
 
+      // 2. 20 days ago: Shah Textiles Purchase #1 (200m white cotton @ ₹310/m = ₹62,000)
+      const { data: e2 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "purchase",
+          party_id: shah.id,
+          bill_no: "4521",
+          date: daysAgo(20),
+          due_date: daysAhead(10),
+          status: "confirmed",
+          paid_amount: 0,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e2.id,
+        item_id: cotton.id,
+        qty: 200,
+        rate: 310,
+      });
+
+      // 3. 14 days ago: Shah Textiles Purchase #2 (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
+      // Combined 300m cost = ₹96,000 -> Weighted-Avg Cost = ₹320/m
       const { data: e3 } = await sb
         .from("entries")
         .insert({
           shop_id: shop.id,
-          type: "sale",
-          party_id: kiran.id,
-          bill_no: "S-101",
-          due_date: due30,
+          type: "purchase",
+          party_id: shah.id,
+          bill_no: "4599",
+          date: daysAgo(14),
+          due_date: daysAhead(16),
           status: "confirmed",
-          paid_amount: 2000,
+          paid_amount: 14000,
         })
         .select("*")
         .single();
       await sb.from("entry_lines").insert({
         entry_id: e3.id,
         item_id: cotton.id,
+        qty: 100,
+        rate: 340,
+      });
+
+      // 4. 8 days ago: Ramesh Traders Bulk Sale (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
+      const { data: e4 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "sale",
+          party_id: ramesh.id,
+          bill_no: "S-101",
+          date: daysAgo(8),
+          due_date: daysAhead(7),
+          status: "confirmed",
+          paid_amount: 30000,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e4.id,
+        item_id: cotton.id,
+        qty: 90,
+        rate: 420,
+      });
+
+      // 5. 3 days ago: Kiran Boutique High-Margin Credit Sale (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
+      const { data: e5 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "sale",
+          party_id: kiran.id,
+          bill_no: "S-102",
+          date: daysAgo(3),
+          due_date: daysAhead(27),
+          status: "confirmed",
+          paid_amount: 2000,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e5.id,
+        item_id: cotton.id,
         qty: 10,
         rate: 450,
       });
 
+      // 6. 1 day ago: Paid Shah Textiles ₹25,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
         party_id: shah.id,
+        date: daysAgo(1),
         status: "confirmed",
         paid_amount: 25000,
         payment_method: "UPI",
@@ -217,14 +272,20 @@ export async function POST(req: NextRequest) {
         bill_no,
         paid_amount,
         due_days,
+        days_ago,
         payment_method,
       } = body;
       const defaultPartyType = type === "sale" ? "customer" : "vendor";
       const party = await getOrCreateParty(shop.id, party_name, defaultPartyType);
 
+      const entryDate =
+        days_ago && Number(days_ago) > 0
+          ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+          : new Date().toISOString();
+
       const dueDate =
         due_days && Number(due_days) > 0
-          ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
+          ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
           : null;
 
       const { data: entry, error } = await sb
@@ -234,6 +295,7 @@ export async function POST(req: NextRequest) {
           type,
           party_id: party.id,
           bill_no: bill_no || null,
+          date: entryDate,
           due_date: dueDate,
           status: "draft",
           paid_amount: Number(paid_amount) || 0,

@@ -50,7 +50,7 @@ export default function RootLayout({
 `
 );
 
-// 3. lib/ledger.ts
+// 3. lib/ledger.ts (Pure TypeScript Math: Cash vs Paper Profit, Customer Matrix, Deadstock Aging)
 write(
   "lib/ledger.ts",
   `import { createClient } from "@supabase/supabase-js";
@@ -165,10 +165,18 @@ export async function computeLedgerState(shopId: string) {
       purchased_qty: number;
       purchase_cost: number;
       sold_qty: number;
+      sales_revenue: number;
       avg_cost: number;
+      avg_selling_rate: number;
       stock_qty: number;
       stock_value: number;
       sell_through_pct: number;
+      first_purchase_date: string | null;
+      last_sale_date: string | null;
+      age_days: number;
+      locked_share_pct: number;
+      clearance_breakeven_rate: number;
+      clearance_10pct_rate: number;
       stock_status: "DEADSTOCK" | "SLOW_MOVING" | "FAST_MOVING" | "OUT_OF_STOCK";
     }
   >();
@@ -181,10 +189,18 @@ export async function computeLedgerState(shopId: string) {
       purchased_qty: 0,
       purchase_cost: 0,
       sold_qty: 0,
+      sales_revenue: 0,
       avg_cost: 0,
+      avg_selling_rate: 0,
       stock_qty: 0,
       stock_value: 0,
       sell_through_pct: 0,
+      first_purchase_date: null,
+      last_sale_date: null,
+      age_days: 0,
+      locked_share_pct: 0,
+      clearance_breakeven_rate: 0,
+      clearance_10pct_rate: 0,
       stock_status: "DEADSTOCK",
     });
   }
@@ -201,29 +217,54 @@ export async function computeLedgerState(shopId: string) {
           const rate = Number(l.rate) || 0;
           st.purchased_qty += qty;
           st.purchase_cost += qty * rate;
+          if (!st.first_purchase_date || new Date(entry.date) < new Date(st.first_purchase_date)) {
+            st.first_purchase_date = entry.date;
+          }
         }
       }
     } else if (entry.type === "sale") {
       for (const l of eLines) {
         const st = stockMap.get(l.item_id);
         if (st) {
-          st.sold_qty += Number(l.qty) || 0;
+          const qty = Number(l.qty) || 0;
+          const rate = Number(l.rate) || 0;
+          st.sold_qty += qty;
+          st.sales_revenue += qty * rate;
+          if (!st.last_sale_date || new Date(entry.date) > new Date(st.last_sale_date)) {
+            st.last_sale_date = entry.date;
+          }
         }
       }
     }
   }
 
+  let totalShopStockValue = 0;
   for (const st of stockMap.values()) {
     st.avg_cost =
       st.purchased_qty > 0
         ? Number((st.purchase_cost / st.purchased_qty).toFixed(2))
         : 0;
+    st.avg_selling_rate =
+      st.sold_qty > 0
+        ? Number((st.sales_revenue / st.sold_qty).toFixed(2))
+        : 0;
     st.stock_qty = Number((st.purchased_qty - st.sold_qty).toFixed(2));
     st.stock_value = Number((Math.max(0, st.stock_qty) * st.avg_cost).toFixed(2));
+    totalShopStockValue += st.stock_value;
+
     st.sell_through_pct =
       st.purchased_qty > 0
         ? Number(Math.min(100, (st.sold_qty / st.purchased_qty) * 100).toFixed(1))
         : 0;
+
+    const refDate = st.last_sale_date || st.first_purchase_date;
+    if (refDate) {
+      const diff = Date.now() - new Date(refDate).getTime();
+      st.age_days = Math.max(1, Math.round(diff / 86400000));
+    }
+
+    st.clearance_breakeven_rate = st.avg_cost;
+    st.clearance_10pct_rate = Number((st.avg_cost * 0.9).toFixed(0));
 
     if (st.stock_qty <= 0 && st.purchased_qty > 0) {
       st.stock_status = "OUT_OF_STOCK";
@@ -234,6 +275,13 @@ export async function computeLedgerState(shopId: string) {
     } else {
       st.stock_status = "FAST_MOVING";
     }
+  }
+
+  for (const st of stockMap.values()) {
+    st.locked_share_pct =
+      totalShopStockValue > 0
+        ? Number(((st.stock_value / totalShopStockValue) * 100).toFixed(1))
+        : 0;
   }
 
   const enrichedEntries = (entries || []).map((entry: any) => {
@@ -288,6 +336,8 @@ export async function computeLedgerState(shopId: string) {
     let totalBilled = 0;
     let totalPaid = 0;
     let totalProfit = 0;
+    let totalCost = 0;
+    let totalQty = 0;
     let orderCount = 0;
     const itemCounts: Record<string, number> = {};
 
@@ -295,9 +345,11 @@ export async function computeLedgerState(shopId: string) {
       if (e.type === "purchase" || e.type === "sale") {
         totalBilled += e.total_amount;
         totalPaid += e.paid_amount;
+        totalQty += Number(e.qty || 0);
         orderCount += 1;
         if (e.type === "sale") {
           totalProfit += e.profit;
+          totalCost += e.cost;
         }
         if (e.item?.name) {
           itemCounts[e.item.name] = (itemCounts[e.item.name] || 0) + Number(e.qty || 0);
@@ -314,6 +366,21 @@ export async function computeLedgerState(shopId: string) {
       totalBilled > 0 ? Math.min(100, Math.round((totalPaid / totalBilled) * 100)) : 100;
     const profitMarginPct =
       totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
+    const aov = orderCount > 0 ? Math.round(totalBilled / orderCount) : 0;
+    const avgRatePaid = totalQty > 0 ? Math.round(totalBilled / totalQty) : 0;
+    const cashRealizedProfit =
+      party.type === "customer" ? Number((totalPaid - totalCost).toFixed(2)) : 0;
+
+    let customerTier: "VIP Cash Buyer" | "High-Margin Credit" | "Credit Risk" | "New" = "New";
+    if (party.type === "customer" && orderCount > 0) {
+      if (paymentRatioPct >= 75) {
+        customerTier = "VIP Cash Buyer";
+      } else if (paymentRatioPct >= 40 && profitMarginPct >= 20) {
+        customerTier = "High-Margin Credit";
+      } else {
+        customerTier = "Credit Risk";
+      }
+    }
 
     const ack = partyAcks.get(party.statement_token) || null;
 
@@ -321,12 +388,18 @@ export async function computeLedgerState(shopId: string) {
       ...party,
       total_billed: Number(totalBilled.toFixed(2)),
       total_paid: Number(totalPaid.toFixed(2)),
+      total_cost: Number(totalCost.toFixed(2)),
       balance,
       order_count: orderCount,
+      total_qty: totalQty,
+      aov,
+      avg_rate_paid: avgRatePaid,
       total_profit: Number(totalProfit.toFixed(2)),
+      cash_realized_profit: cashRealizedProfit,
       profit_margin_pct: profitMarginPct,
       payment_ratio_pct: paymentRatioPct,
       favorite_item: topItem,
+      customer_tier: customerTier,
       ack,
       entries: pEntries,
     };
@@ -337,20 +410,42 @@ export async function computeLedgerState(shopId: string) {
     .filter((e: any) => e.status === "confirmed")
     .reverse();
 
+  const totalPayables = partyBalances
+    .filter((p: any) => p.type === "vendor" && p.balance > 0)
+    .reduce((acc: number, p: any) => acc + p.balance, 0);
+
+  const totalReceivables = partyBalances
+    .filter((p: any) => p.type === "customer" && p.balance > 0)
+    .reduce((acc: number, p: any) => acc + p.balance, 0);
+
+  const totalBookedProfit = confirmedList
+    .filter((e: any) => e.type === "sale")
+    .reduce((acc: number, e: any) => acc + e.profit, 0);
+
+  const totalCashRealizedProfit = partyBalances
+    .filter((p: any) => p.type === "customer")
+    .reduce((acc: number, p: any) => acc + p.cash_realized_profit, 0);
+
+  const deadstockValue = stockList
+    .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
+    .reduce((acc: number, s: any) => acc + s.stock_value, 0);
+
+  const activeStockValue = Math.max(0, totalShopStockValue - deadstockValue);
+  const coverageRatio =
+    totalPayables > 0
+      ? Number(((totalReceivables + activeStockValue) / totalPayables).toFixed(2))
+      : 99;
+
   const kpis = {
-    total_payables: partyBalances
-      .filter((p: any) => p.type === "vendor" && p.balance > 0)
-      .reduce((acc: number, p: any) => acc + p.balance, 0),
-    total_receivables: partyBalances
-      .filter((p: any) => p.type === "customer" && p.balance > 0)
-      .reduce((acc: number, p: any) => acc + p.balance, 0),
-    total_stock_value: stockList.reduce((acc: number, s: any) => acc + s.stock_value, 0),
-    total_profit: confirmedList
-      .filter((e: any) => e.type === "sale")
-      .reduce((acc: number, e: any) => acc + e.profit, 0),
-    deadstock_value: stockList
-      .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
-      .reduce((acc: number, s: any) => acc + s.stock_value, 0),
+    total_payables: totalPayables,
+    total_receivables: totalReceivables,
+    total_stock_value: totalShopStockValue,
+    active_stock_value: activeStockValue,
+    total_profit: totalBookedProfit,
+    cash_realized_profit: totalCashRealizedProfit,
+    uncollected_profit: Number((totalBookedProfit - totalCashRealizedProfit).toFixed(2)),
+    deadstock_value: deadstockValue,
+    coverage_ratio: coverageRatio,
   };
 
   return {
@@ -365,7 +460,7 @@ export async function computeLedgerState(shopId: string) {
 `
 );
 
-// 4. app/api/ledger/route.ts
+// 4. app/api/ledger/route.ts (With Staggered Backdated Seed Data for Realistic Aging)
 write(
   "app/api/ledger/route.ts",
   `import { NextRequest, NextResponse } from "next/server";
@@ -496,40 +591,24 @@ export async function POST(req: NextRequest) {
 
       const shah = await getOrCreateParty(shop.id, "Shah Textiles", "vendor");
       const surat = await getOrCreateParty(shop.id, "Surat Silk Mills", "vendor");
+      const ramesh = await getOrCreateParty(shop.id, "Ramesh Traders", "customer");
       const kiran = await getOrCreateParty(shop.id, "Kiran Boutique", "customer");
 
       const cotton = await getOrCreateItem(shop.id, "white cotton", "m");
       const velvet = await getOrCreateItem(shop.id, "red velvet", "m");
 
-      const due30 = new Date(Date.now() + 30 * 86400000).toISOString();
+      const daysAgo = (d: number) => new Date(Date.now() - d * 86400000).toISOString();
+      const daysAhead = (d: number) => new Date(Date.now() + d * 86400000).toISOString();
 
+      // 1. 45 days ago: Deadstock Purchase (50m red velvet @ ₹500/m = ₹25,000, 0 sold)
       const { data: e1 } = await sb
-        .from("entries")
-        .insert({
-          shop_id: shop.id,
-          type: "purchase",
-          party_id: shah.id,
-          bill_no: "4521",
-          due_date: due30,
-          status: "confirmed",
-          paid_amount: 0,
-        })
-        .select("*")
-        .single();
-      await sb.from("entry_lines").insert({
-        entry_id: e1.id,
-        item_id: cotton.id,
-        qty: 200,
-        rate: 310,
-      });
-
-      const { data: e2 } = await sb
         .from("entries")
         .insert({
           shop_id: shop.id,
           type: "purchase",
           party_id: surat.id,
           bill_no: "8810",
+          date: daysAgo(45),
           status: "confirmed",
           paid_amount: 25000,
           payment_method: "Bank",
@@ -537,36 +616,107 @@ export async function POST(req: NextRequest) {
         .select("*")
         .single();
       await sb.from("entry_lines").insert({
-        entry_id: e2.id,
+        entry_id: e1.id,
         item_id: velvet.id,
         qty: 50,
         rate: 500,
       });
 
+      // 2. 20 days ago: Shah Textiles Purchase #1 (200m white cotton @ ₹310/m = ₹62,000)
+      const { data: e2 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "purchase",
+          party_id: shah.id,
+          bill_no: "4521",
+          date: daysAgo(20),
+          due_date: daysAhead(10),
+          status: "confirmed",
+          paid_amount: 0,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e2.id,
+        item_id: cotton.id,
+        qty: 200,
+        rate: 310,
+      });
+
+      // 3. 14 days ago: Shah Textiles Purchase #2 (100m white cotton @ ₹340/m = ₹34,000, paid ₹14,000)
+      // Combined 300m cost = ₹96,000 -> Weighted-Avg Cost = ₹320/m
       const { data: e3 } = await sb
         .from("entries")
         .insert({
           shop_id: shop.id,
-          type: "sale",
-          party_id: kiran.id,
-          bill_no: "S-101",
-          due_date: due30,
+          type: "purchase",
+          party_id: shah.id,
+          bill_no: "4599",
+          date: daysAgo(14),
+          due_date: daysAhead(16),
           status: "confirmed",
-          paid_amount: 2000,
+          paid_amount: 14000,
         })
         .select("*")
         .single();
       await sb.from("entry_lines").insert({
         entry_id: e3.id,
         item_id: cotton.id,
+        qty: 100,
+        rate: 340,
+      });
+
+      // 4. 8 days ago: Ramesh Traders Bulk Sale (90m white cotton @ ₹420/m = ₹37,800, paid ₹30,000)
+      const { data: e4 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "sale",
+          party_id: ramesh.id,
+          bill_no: "S-101",
+          date: daysAgo(8),
+          due_date: daysAhead(7),
+          status: "confirmed",
+          paid_amount: 30000,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e4.id,
+        item_id: cotton.id,
+        qty: 90,
+        rate: 420,
+      });
+
+      // 5. 3 days ago: Kiran Boutique High-Margin Credit Sale (10m white cotton @ ₹450/m = ₹4,500, paid ₹2,000)
+      const { data: e5 } = await sb
+        .from("entries")
+        .insert({
+          shop_id: shop.id,
+          type: "sale",
+          party_id: kiran.id,
+          bill_no: "S-102",
+          date: daysAgo(3),
+          due_date: daysAhead(27),
+          status: "confirmed",
+          paid_amount: 2000,
+        })
+        .select("*")
+        .single();
+      await sb.from("entry_lines").insert({
+        entry_id: e5.id,
+        item_id: cotton.id,
         qty: 10,
         rate: 450,
       });
 
+      // 6. 1 day ago: Paid Shah Textiles ₹25,000 via UPI
       await sb.from("entries").insert({
         shop_id: shop.id,
         type: "payment",
         party_id: shah.id,
+        date: daysAgo(1),
         status: "confirmed",
         paid_amount: 25000,
         payment_method: "UPI",
@@ -587,14 +737,20 @@ export async function POST(req: NextRequest) {
         bill_no,
         paid_amount,
         due_days,
+        days_ago,
         payment_method,
       } = body;
       const defaultPartyType = type === "sale" ? "customer" : "vendor";
       const party = await getOrCreateParty(shop.id, party_name, defaultPartyType);
 
+      const entryDate =
+        days_ago && Number(days_ago) > 0
+          ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+          : new Date().toISOString();
+
       const dueDate =
         due_days && Number(due_days) > 0
-          ? new Date(Date.now() + Number(due_days) * 86400000).toISOString()
+          ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
           : null;
 
       const { data: entry, error } = await sb
@@ -604,6 +760,7 @@ export async function POST(req: NextRequest) {
           type,
           party_id: party.id,
           bill_no: bill_no || null,
+          date: entryDate,
           due_date: dueDate,
           status: "draft",
           paid_amount: Number(paid_amount) || 0,
@@ -640,407 +797,606 @@ export async function POST(req: NextRequest) {
 `
 );
 
-// 5. app/login/page.tsx (Real Admin Session Login + 1-Click Auto-Fill for Reviewers)
+// 5. app/api/mcp/route.ts (Upgraded get_business_insights + days_ago support)
 write(
-  "app/login/page.tsx",
-  `"use client";
-import { useState } from "react";
-import Link from "next/link";
+  "app/api/mcp/route.ts",
+  `import { NextRequest, NextResponse } from "next/server";
+import {
+  getSupabase,
+  getShop,
+  getOrCreateParty,
+  getOrCreateItem,
+  computeLedgerState,
+} from "@/lib/ledger";
 
-export default function LoginPage() {
-  const [email, setEmail] = useState("admin@mcpserver.com");
-  const [password, setPassword] = useState("password123");
-  const [error, setError] = useState("");
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
+};
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (
-      email.trim().toLowerCase() === "admin@mcpserver.com" &&
-      password === "password123"
-    ) {
-      if (typeof window !== "undefined") {
-        localStorage.setItem("mcp_admin_auth", "true");
-        window.location.href = "/";
+const TOOLS = [
+  {
+    name: "create_purchase",
+    description:
+      "Record a cloth/textile stock purchase from a vendor as a draft entry in MCP Server. Always creates a draft so a human can review, edit, and confirm it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        party_name: { type: "string", description: "Vendor name, e.g. 'Shah Textiles'" },
+        item_name: { type: "string", description: "Item name, e.g. 'white cotton'" },
+        qty: { type: "number", description: "Quantity purchased, e.g. 200" },
+        rate: { type: "number", description: "Price per unit in INR, e.g. 300" },
+        unit: { type: "string", description: "Unit (m, pcs, roll). Defaults to 'm'" },
+        bill_no: { type: "string", description: "Optional bill or invoice number, e.g. '4521'" },
+        paid_amount: { type: "number", description: "Amount paid upfront in INR (0 if on credit)" },
+        due_days: { type: "number", description: "Credit due days, e.g. 30" },
+        days_ago: { type: "number", description: "Optional: if purchased in the past (e.g. 45 days ago)" },
+        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
+      },
+      required: ["party_name", "item_name", "qty", "rate"],
+    },
+  },
+  {
+    name: "create_sale",
+    description:
+      "Record a textile sale to a customer as a draft entry. You can pass either total_amount (e.g. 4500 for 10m) or rate per unit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        party_name: { type: "string", description: "Customer name, e.g. 'Kiran'" },
+        item_name: { type: "string", description: "Item sold, e.g. 'white cotton'" },
+        qty: { type: "number", description: "Quantity sold, e.g. 10" },
+        total_amount: { type: "number", description: "Total sale amount in INR, e.g. 4500" },
+        rate: { type: "number", description: "Rate per unit in INR (optional if total_amount is given)" },
+        paid_amount: { type: "number", description: "Amount customer paid now in INR, e.g. 2000" },
+        due_days: { type: "number", description: "Optional credit due days" },
+        days_ago: { type: "number", description: "Optional: if sold in the past (e.g. 10 days ago)" },
+        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
+      },
+      required: ["party_name", "item_name", "qty"],
+    },
+  },
+  {
+    name: "create_payment",
+    description:
+      "Record a payment made to a vendor or received from a customer as a draft entry.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        party_name: { type: "string", description: "Party name, e.g. 'Shah' or 'Shah Textiles'" },
+        amount: { type: "number", description: "Payment amount in INR, e.g. 25000" },
+        method: { type: "string", description: "Payment method, e.g. 'UPI', 'Cash', 'Bank'" },
+        idempotency_key: { type: "string", description: "Optional unique key to prevent duplicate drafts" },
+      },
+      required: ["party_name", "amount"],
+    },
+  },
+  {
+    name: "get_stock",
+    description:
+      "Get exact current stock quantity, weighted-average cost per unit, sell-through %, age in days, and deadstock status from confirmed ledger entries.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        item_name: { type: "string", description: "Optional item name filter, e.g. 'white cotton'" },
+      },
+    },
+  },
+  {
+    name: "get_party_balance",
+    description:
+      "Get exact balance owed to a vendor or owed by a customer from confirmed entries, plus customer tier and live statement link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        party_name: { type: "string", description: "Vendor or customer name, e.g. 'Shah'" },
+      },
+      required: ["party_name"],
+    },
+  },
+  {
+    name: "list_outstanding",
+    description:
+      "List all vendors we owe and all customers who owe us with exact balances and live statement links.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_business_insights",
+    description:
+      "Analyze working capital coverage, Booked vs Cash-Realized Profit, Customer Buying & Price Realization Matrix (VIP Cash vs High-Margin Credit), and Deadstock Liquidation math.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+];
+
+async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: string | null) {
+  const sb = getSupabase();
+  const shop = await getShop(mcpKey);
+  const origin = new URL(reqUrl).origin;
+
+  if (name === "create_purchase") {
+    const {
+      party_name,
+      item_name,
+      qty,
+      rate,
+      unit = "m",
+      bill_no,
+      paid_amount = 0,
+      due_days,
+      days_ago,
+      idempotency_key,
+    } = args || {};
+
+    if (idempotency_key) {
+      const { data: existing } = await sb
+        .from("entries")
+        .select("*")
+        .eq("shop_id", shop.id)
+        .eq("idempotency_key", idempotency_key)
+        .maybeSingle();
+      if (existing) {
+        return \`Draft purchase already recorded (idempotency_key: \${idempotency_key}). Review and confirm it at \${origin}\`;
       }
+    }
+
+    const party = await getOrCreateParty(shop.id, party_name, "vendor");
+    const item = await getOrCreateItem(shop.id, item_name, unit);
+    const entryDate =
+      days_ago && Number(days_ago) > 0
+        ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+        : new Date().toISOString();
+    const dueDate = due_days
+      ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
+      : null;
+
+    const { data: entry, error } = await sb
+      .from("entries")
+      .insert({
+        shop_id: shop.id,
+        type: "purchase",
+        party_id: party.id,
+        bill_no: bill_no ? String(bill_no) : null,
+        date: entryDate,
+        due_date: dueDate,
+        status: "draft",
+        paid_amount: Number(paid_amount) || 0,
+        idempotency_key: idempotency_key || null,
+      })
+      .select("*")
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    await sb.from("entry_lines").insert({
+      entry_id: entry.id,
+      item_id: item.id,
+      qty: Number(qty),
+      rate: Number(rate),
+    });
+
+    const total = Number(qty) * Number(rate);
+    const unpaid = total - (Number(paid_amount) || 0);
+    return [
+      \`Draft Purchase Saved in MCP Server!\`,
+      \`- Vendor: \${party.name}\`,
+      \`- Item: \${qty} \${item.unit} \${item.name} @ ₹\${rate}/\${item.unit} = ₹\${total.toLocaleString("en-IN")}\`,
+      bill_no ? \`- Bill No: \${bill_no}\` : null,
+      \`- Credit / Unpaid: ₹\${unpaid.toLocaleString("en-IN")}\${due_days ? \` (Due in \${due_days} days)\` : ""}\`,
+      \`- Review, edit & confirm in Inbox: \${origin}\`,
+    ]
+      .filter(Boolean)
+      .join("\\n");
+  }
+
+  if (name === "create_sale") {
+    const {
+      party_name,
+      item_name,
+      qty,
+      total_amount,
+      rate,
+      paid_amount = 0,
+      due_days,
+      days_ago,
+      idempotency_key,
+    } = args || {};
+
+    if (idempotency_key) {
+      const { data: existing } = await sb
+        .from("entries")
+        .select("*")
+        .eq("shop_id", shop.id)
+        .eq("idempotency_key", idempotency_key)
+        .maybeSingle();
+      if (existing) {
+        return \`Draft sale already recorded. Review & confirm at \${origin}\`;
+      }
+    }
+
+    const computedRate =
+      rate !== undefined
+        ? Number(rate)
+        : total_amount !== undefined && Number(qty) > 0
+        ? Number((Number(total_amount) / Number(qty)).toFixed(2))
+        : 0;
+
+    const party = await getOrCreateParty(shop.id, party_name, "customer");
+    const item = await getOrCreateItem(shop.id, item_name, "m");
+    const entryDate =
+      days_ago && Number(days_ago) > 0
+        ? new Date(Date.now() - Number(days_ago) * 86400000).toISOString()
+        : new Date().toISOString();
+    const dueDate = due_days
+      ? new Date(new Date(entryDate).getTime() + Number(due_days) * 86400000).toISOString()
+      : null;
+
+    const { data: entry, error } = await sb
+      .from("entries")
+      .insert({
+        shop_id: shop.id,
+        type: "sale",
+        party_id: party.id,
+        date: entryDate,
+        due_date: dueDate,
+        status: "draft",
+        paid_amount: Number(paid_amount) || 0,
+        idempotency_key: idempotency_key || null,
+      })
+      .select("*")
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    await sb.from("entry_lines").insert({
+      entry_id: entry.id,
+      item_id: item.id,
+      qty: Number(qty),
+      rate: computedRate,
+    });
+
+    const total = Number((Number(qty) * computedRate).toFixed(2));
+    const owed = Number((total - (Number(paid_amount) || 0)).toFixed(2));
+    return [
+      \`Draft Sale Saved in MCP Server!\`,
+      \`- Customer: \${party.name}\`,
+      \`- Item: \${qty} \${item.unit} \${item.name} @ ₹\${computedRate}/\${item.unit} = ₹\${total.toLocaleString("en-IN")}\`,
+      \`- Paid now: ₹\${Number(paid_amount).toLocaleString("en-IN")} | Customer owes: ₹\${owed.toLocaleString("en-IN")}\`,
+      \`- Review, edit & confirm in Inbox: \${origin}\`,
+    ].join("\\n");
+  }
+
+  if (name === "create_payment") {
+    const { party_name, amount, method = "UPI", idempotency_key } = args || {};
+
+    if (idempotency_key) {
+      const { data: existing } = await sb
+        .from("entries")
+        .select("*")
+        .eq("shop_id", shop.id)
+        .eq("idempotency_key", idempotency_key)
+        .maybeSingle();
+      if (existing) {
+        return \`Draft payment already recorded. Review & confirm at \${origin}\`;
+      }
+    }
+
+    const { data: allParties = [] } = await sb
+      .from("parties")
+      .select("*")
+      .eq("shop_id", shop.id);
+    const matched =
+      (allParties || []).find(
+        (p: any) =>
+          p.name.toLowerCase() === String(party_name).trim().toLowerCase() ||
+          p.name.toLowerCase().includes(String(party_name).trim().toLowerCase())
+      ) || (await getOrCreateParty(shop.id, party_name, "vendor"));
+
+    const { error } = await sb.from("entries").insert({
+      shop_id: shop.id,
+      type: "payment",
+      party_id: matched.id,
+      status: "draft",
+      paid_amount: Number(amount),
+      payment_method: method,
+      idempotency_key: idempotency_key || null,
+    });
+
+    if (error) throw new Error(error.message);
+
+    return [
+      \`Draft Payment Saved in MCP Server!\`,
+      \`- Party: \${matched.name} (\${matched.type})\`,
+      \`- Amount: ₹\${Number(amount).toLocaleString("en-IN")} via \${method}\`,
+      \`- Review & confirm in Inbox: \${origin}\`,
+    ].join("\\n");
+  }
+
+  if (name === "get_stock") {
+    const { item_name } = args || {};
+    const state = await computeLedgerState(shop.id);
+    const list = item_name
+      ? state.stock.filter((s: any) =>
+          s.name.toLowerCase().includes(String(item_name).trim().toLowerCase())
+        )
+      : state.stock;
+
+    if (list.length === 0) {
+      return "No confirmed stock found yet. (Remember to confirm drafts in the web app Inbox!)";
+    }
+
+    return list
+      .map(
+        (s: any) =>
+          \`• \${s.name}: \${s.stock_qty} \${s.unit} left (In: \${s.purchased_qty} \${s.unit}, Sold: \${s.sold_qty} \${s.unit} [\${s.sell_through_pct}%], Avg Cost: ₹\${s.avg_cost}/\${s.unit}, Locked Capital: ₹\${s.stock_value.toLocaleString("en-IN")} [\${s.locked_share_pct}% of stock], Unsold Age: \${s.age_days}d, Status: \${s.stock_status})\`
+      )
+      .join("\\n");
+  }
+
+  if (name === "get_party_balance") {
+    const { party_name } = args || {};
+    const state = await computeLedgerState(shop.id);
+    const q = String(party_name || "").trim().toLowerCase();
+    const party = state.parties.find(
+      (p: any) => p.name.toLowerCase() === q || p.name.toLowerCase().includes(q)
+    );
+
+    if (!party) {
+      return \`No party matching '\${party_name}' found in MCP Server.\`;
+    }
+
+    const statementUrl = \`\${origin}/s/\${party.statement_token}\`;
+    const whoOwes =
+      party.type === "vendor"
+        ? \`You owe \${party.name}: ₹\${party.balance.toLocaleString("en-IN")}\`
+        : \`\${party.name} owes you: ₹\${party.balance.toLocaleString("en-IN")}\`;
+
+    return [
+      whoOwes,
+      \`- Party Type: \${party.type}\${party.type === "customer" ? \` (\${party.customer_tier})\` : ""}\`,
+      \`- Total Confirmed Billed: ₹\${party.total_billed.toLocaleString("en-IN")} (AOV: ₹\${party.aov.toLocaleString("en-IN")})\`,
+      \`- Total Confirmed Paid: ₹\${party.total_paid.toLocaleString("en-IN")} (\${party.payment_ratio_pct}% paid)\`,
+      party.type === "customer"
+        ? \`- Booked Profit: +₹\${party.total_profit.toLocaleString("en-IN")} (\${party.profit_margin_pct}% margin) | Cash-Realized Profit: ₹\${party.cash_realized_profit.toLocaleString("en-IN")}\`
+        : null,
+      \`- Live Public Statement Link (no login required): \${statementUrl}\`,
+    ]
+      .filter(Boolean)
+      .join("\\n");
+  }
+
+  if (name === "list_outstanding") {
+    const state = await computeLedgerState(shop.id);
+    const vendors = state.parties.filter((p: any) => p.type === "vendor" && p.balance !== 0);
+    const customers = state.parties.filter(
+      (p: any) => p.type === "customer" && p.balance !== 0
+    );
+
+    const lines: string[] = ["=== Outstanding Balances (Confirmed Ledger) ==="];
+    lines.push("\\n1. Vendors You Owe (Payables):");
+    if (vendors.length === 0) {
+      lines.push("   • None (₹0)");
     } else {
-      setError("Invalid credentials. Use admin@mcpserver.com / password123");
+      for (const v of vendors) {
+        lines.push(
+          \`   • \${v.name}: ₹\${v.balance.toLocaleString("en-IN")} | Live Statement: \${origin}/s/\${v.statement_token}\`
+        );
+      }
     }
+
+    lines.push("\\n2. Customers Who Owe You (Receivables):");
+    if (customers.length === 0) {
+      lines.push("   • None (₹0)");
+    } else {
+      for (const c of customers) {
+        lines.push(
+          \`   • \${c.name} [\${c.customer_tier}]: ₹\${c.balance.toLocaleString("en-IN")} | Live Statement: \${origin}/s/\${c.statement_token}\`
+        );
+      }
+    }
+    return lines.join("\\n");
   }
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full space-y-5 shadow-2xl">
-        <div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold uppercase px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-              🔒 Shop Owner Access
-            </span>
-            <Link
-              href="/"
-              className="text-xs text-slate-400 hover:text-white"
-            >
-              ← Read-Only View
-            </Link>
-          </div>
-          <h1 className="text-xl font-bold mt-3">MCP Server Admin Login</h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Sign in to confirm Claude MCP drafts, edit rates, or manage shop keys.
-          </p>
-        </div>
+  if (name === "get_business_insights") {
+    const state = await computeLedgerState(shop.id);
+    const deadOrSlow = state.stock.filter(
+      (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
+    );
+    const customers = state.parties
+      .filter((p: any) => p.type === "customer")
+      .sort((a: any, b: any) => b.total_profit - a.total_profit);
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="text-xs text-slate-400 block mb-1">Admin Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-xs text-slate-400 block mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white"
-              required
-            />
-          </div>
+    const lines: string[] = [
+      "=== MCP Server Business Insights (100% Deterministic Code Math) ===",
+      "\\n1. Profit Quality & Working Capital Health:",
+      \`   • Booked Profit (Paper): +₹\${state.kpis.total_profit.toLocaleString("en-IN")}\`,
+      \`   • Cash-Realized Profit (In Hand): ₹\${state.kpis.cash_realized_profit.toLocaleString("en-IN")} (₹\${state.kpis.uncollected_profit.toLocaleString("en-IN")} locked in customer credit)\`,
+      \`   • Vendor Payables Due: ₹\${state.kpis.total_payables.toLocaleString("en-IN")} vs Liquid Coverage (Receivables + Active Stock): ₹\${(state.kpis.total_receivables + state.kpis.active_stock_value).toLocaleString("en-IN")} (\${state.kpis.coverage_ratio}x coverage)\`,
+      "\\n2. Customer Buying Behavior & Price Realization Matrix:",
+    ];
 
-          {error && (
-            <p className="text-xs text-rose-400 bg-rose-950/50 border border-rose-800 rounded-lg px-3 py-2">
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
-          >
-            Sign In as Ravi (Shop Admin)
-          </button>
-        </form>
-
-        <div className="pt-3 border-t border-slate-800 space-y-2 text-[11px] text-slate-400">
-          <div className="flex items-center justify-between">
-            <span>Reviewer Test Credentials:</span>
-            <button
-              type="button"
-              onClick={() => {
-                setEmail("admin@mcpserver.com");
-                setPassword("password123");
-              }}
-              className="text-emerald-400 hover:underline font-semibold cursor-pointer"
-            >
-              Auto-Fill
-            </button>
-          </div>
-          <p className="font-mono text-slate-300 bg-slate-950 px-3 py-2 rounded-lg border border-slate-800">
-            Email: admin@mcpserver.com
-            <br />
-            Pass: password123
-          </p>
-          <p className="text-[10px] text-slate-500">
-            Note: External vendors & customers do not log in here—they use their capability-scoped statement link (/s/[token]).
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-`
-);
-
-// 6. app/s/[token]/page.tsx (Capability-Scoped Vendor/Customer Statement with Data Isolation)
-write(
-  "app/s/[token]/page.tsx",
-  `"use client";
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
-
-export default function PublicStatementPage() {
-  const params = useParams();
-  const token = params?.token as string;
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [ackStatus, setAckStatus] = useState<"none" | "verified" | "disputed">("none");
-  const [ackTime, setAckTime] = useState<string>("");
-
-  useEffect(() => {
-    if (!token) return;
-    const saved =
-      typeof window !== "undefined"
-        ? localStorage.getItem(\`mcp_ack_\${token}\`)
-        : null;
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setAckStatus(parsed.status);
-        setAckTime(parsed.time);
-      } catch {}
+    if (customers.length === 0) {
+      lines.push("   • No confirmed customer sales yet.");
+    } else {
+      for (const c of customers) {
+        lines.push(
+          \`   • \${c.name} [\${c.customer_tier}]: Pays avg ₹\${c.avg_rate_paid}/m | AOV: ₹\${c.aov.toLocaleString("en-IN")} | Booked Profit: +₹\${c.total_profit.toLocaleString("en-IN")} (\${c.profit_margin_pct}%) | Cash Profit: ₹\${c.cash_realized_profit.toLocaleString("en-IN")} | Credit Discipline: \${c.payment_ratio_pct}% paid\`
+        );
+      }
     }
 
-    fetch(\`/api/ledger?statement_token=\${token}\`)
-      .then((r) => r.json())
-      .then((res) => {
-        setData(res);
-        if (res?.party?.ack) {
-          setAckStatus(res.party.ack.status);
-          setAckTime(res.party.ack.time);
-        }
-        setLoading(false);
-      });
-  }, [token]);
+    lines.push("\\n3. Deadstock Age & Liquidation Plan:");
+    if (deadOrSlow.length === 0) {
+      lines.push("   • None! All items have healthy sell-through (>25%).");
+    } else {
+      for (const s of deadOrSlow) {
+        lines.push(
+          \`   • [\${s.stock_status} • \${s.age_days}d old] \${s.name}: \${s.stock_qty} \${s.unit} unsold (\${s.locked_share_pct}% of shop stock value = ₹\${s.stock_value.toLocaleString("en-IN")} locked). Break-even clearance rate: ₹\${s.clearance_breakeven_rate}/\${s.unit} (10% markdown rate: ₹\${s.clearance_10pct_rate}/\${s.unit} recovers ₹\${Math.round(s.stock_qty * s.clearance_10pct_rate).toLocaleString("en-IN")})\`
+        );
+      }
+    }
 
-  async function handleAck(status: "verified" | "disputed") {
-    const now = new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    setAckStatus(status);
-    setAckTime(now);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(
-        \`mcp_ack_\${token}\`,
-        JSON.stringify({ status, time: now })
+    return lines.join("\\n");
+  }
+
+  throw new Error(\`Unknown tool: \${name}\`);
+}
+
+async function handleJsonRpcMessage(msg: any, reqUrl: string, mcpKey?: string | null) {
+  const { id, method, params } = msg || {};
+
+  if (method === "initialize") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: params?.protocolVersion || "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: {
+          name: "mcp-server-textile-ledger",
+          version: "1.0.0",
+        },
+      },
+    };
+  }
+
+  if (
+    method === "notifications/initialized" ||
+    method === "notifications/cancelled"
+  ) {
+    return null;
+  }
+
+  if (method === "ping") {
+    return { jsonrpc: "2.0", id, result: {} };
+  }
+
+  if (method === "tools/list") {
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: { tools: TOOLS },
+    };
+  }
+
+  if (method === "resources/list") {
+    return { jsonrpc: "2.0", id, result: { resources: [] } };
+  }
+
+  if (method === "prompts/list") {
+    return { jsonrpc: "2.0", id, result: { prompts: [] } };
+  }
+
+  if (method === "tools/call") {
+    try {
+      const text = await executeTool(
+        params?.name,
+        params?.arguments || {},
+        reqUrl,
+        mcpKey
       );
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text }],
+          isError: false,
+        },
+      };
+    } catch (err: any) {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: \`Error: \${err.message}\` }],
+          isError: true,
+        },
+      };
     }
-    await fetch("/api/ledger", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "ack_statement",
-        statement_token: token,
-        status,
-      }),
-    });
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <p className="text-slate-400 text-sm">Loading verified statement...</p>
-      </div>
-    );
+  if (id !== undefined) {
+    return {
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32601, message: \`Method not found: \${method}\` },
+    };
   }
+  return null;
+}
 
-  if (!data || data.error || !data.party) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full text-center">
-          <h1 className="text-lg font-bold text-rose-400">Statement Link Expired or Invalid</h1>
-          <p className="text-xs text-slate-400 mt-2">
-            This capability token does not match an active party record.
-          </p>
-        </div>
-      </div>
-    );
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+export async function GET(req: NextRequest) {
+  const accept = req.headers.get("accept") || "";
+  if (accept.includes("text/event-stream")) {
+    return new NextResponse(null, { status: 405, headers: CORS_HEADERS });
   }
-
-  const { party, shop } = data;
-  const isVendor = party.type === "vendor";
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-white py-6 px-4 flex justify-center">
-      <div className="w-full max-w-md space-y-4">
-        {/* Security & Data Isolation Banner */}
-        <div className="bg-slate-900/90 border border-emerald-500/30 rounded-xl px-3.5 py-2 flex items-center justify-between text-[11px]">
-          <span className="text-emerald-300 font-semibold">
-            🔒 Capability-Scoped Read-Only Ledger
-          </span>
-          <span className="text-slate-400">No Login Required</span>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
-          <div className="flex items-center justify-between">
-            <span
-              className={\`text-[10px] uppercase tracking-wider px-2.5 py-1 rounded-full font-bold \${
-                isVendor
-                  ? "bg-amber-500/15 text-amber-300"
-                  : "bg-sky-500/15 text-sky-300"
-              }\`}
-            >
-              ● {party.type} Statement
-            </span>
-            <button
-              onClick={() => window.print()}
-              className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded-lg text-slate-300 cursor-pointer"
-            >
-              🖨️ Print / Save PDF
-            </button>
-          </div>
-
-          <h1 className="text-xl font-bold mt-3">{party.name}</h1>
-          <p className="text-xs text-slate-400">
-            Verified account with{" "}
-            <span className="text-slate-200 font-semibold">
-              {shop?.name || "MCP Server"}
-            </span>{" "}
-            • Isolated strictly to {party.name}&apos;s bills
-          </p>
-
-          <div className="mt-4 p-4 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
-            <div>
-              <p className="text-xs text-slate-400">
-                {isVendor
-                  ? "Net Balance Payable to You"
-                  : "Net Balance Due from You"}
-              </p>
-              <p
-                className={\`text-2xl font-extrabold mt-0.5 \${
-                  party.balance === 0
-                    ? "text-emerald-400"
-                    : isVendor
-                    ? "text-amber-400"
-                    : "text-sky-400"
-                }\`}
-              >
-                ₹{Number(party.balance).toLocaleString("en-IN")}
-              </p>
-            </div>
-            <div className="text-right text-xs text-slate-400 space-y-1">
-              <p>
-                Total Billed:{" "}
-                <span className="text-white font-semibold">
-                  ₹{Number(party.total_billed).toLocaleString("en-IN")}
-                </span>
-              </p>
-              <p>
-                Total Paid:{" "}
-                <span className="text-emerald-400 font-semibold">
-                  ₹{Number(party.total_paid).toLocaleString("en-IN")}
-                </span>
-              </p>
-            </div>
-          </div>
-
-          {/* Two-Way Counterparty Verification */}
-          <div className="mt-4 pt-3 border-t border-slate-800">
-            {ackStatus === "none" ? (
-              <div className="space-y-1.5">
-                <p className="text-[11px] text-slate-400">
-                  Do you agree with this running balance?
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleAck("verified")}
-                    className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
-                  >
-                    ✓ Verify Balance (₹{Number(party.balance).toLocaleString("en-IN")})
-                  </button>
-                  <button
-                    onClick={() => handleAck("disputed")}
-                    className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
-                  >
-                    Flag Dispute
-                  </button>
-                </div>
-              </div>
-            ) : ackStatus === "verified" ? (
-              <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300 font-semibold">
-                <span>
-                  ✓ Verified by {party.name} {ackTime ? \`at \${ackTime}\` : ""}
-                </span>
-                <button
-                  onClick={() => setAckStatus("none")}
-                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
-                >
-                  Change
-                </button>
-              </div>
-            ) : (
-              <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 flex items-center justify-between text-xs text-rose-300 font-semibold">
-                <span>⚠ Dispute flagged for Shop Admin review</span>
-                <button
-                  onClick={() => setAckStatus("none")}
-                  className="text-[10px] underline text-slate-400 hover:text-white cursor-pointer"
-                >
-                  Change
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          <h2 className="text-sm font-semibold text-slate-300 px-1">
-            Confirmed Bills & Payments ({party.entries?.length || 0})
-          </h2>
-
-          {(!party.entries || party.entries.length === 0) && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
-              No confirmed transactions posted yet.
-            </div>
-          )}
-
-          {(party.entries || []).map((e: any) => (
-            <div
-              key={e.id}
-              className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2"
-            >
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-xs font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-200">
-                    {e.type}
-                  </span>
-                  {e.bill_no && (
-                    <span className="ml-2 text-xs text-slate-400">
-                      Bill #{e.bill_no}
-                    </span>
-                  )}
-                  <p className="text-xs text-slate-400 mt-1">
-                    {new Date(e.date).toLocaleDateString("en-IN", {
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
-                    {e.due_date &&
-                      \` • Due: \${new Date(e.due_date).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                      })}\`}
-                  </p>
-                </div>
-                <div className="text-right">
-                  {e.type === "payment" ? (
-                    <p className="text-base font-bold text-emerald-400">
-                      -₹{Number(e.paid_amount).toLocaleString("en-IN")}
-                    </p>
-                  ) : (
-                    <p className="text-base font-bold text-white">
-                      ₹{Number(e.total_amount).toLocaleString("en-IN")}
-                    </p>
-                  )}
-                  {e.type !== "payment" && e.paid_amount > 0 && (
-                    <p className="text-xs text-emerald-400">
-                      Paid: ₹{Number(e.paid_amount).toLocaleString("en-IN")}
-                    </p>
-                  )}
-                  {e.payment_method && (
-                    <p className="text-xs text-slate-400">via {e.payment_method}</p>
-                  )}
-                </div>
-              </div>
-
-              {e.item && (
-                <div className="text-xs text-slate-300 bg-slate-950/70 px-3 py-2 rounded-lg border border-slate-800/80">
-                  {e.qty} {e.item.unit} {e.item.name} × ₹{e.rate}/{e.item.unit}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+  const { searchParams } = new URL(req.url);
+  const shop = await getShop(searchParams.get("key"));
+  return NextResponse.json(
+    {
+      name: "MCP Server — B2B Textile Ledger",
+      status: "live",
+      shop: shop?.name || "MCP Server",
+      mcp_endpoint: "/api/mcp?key=ravi123",
+      tools: TOOLS.map((t) => t.name),
+    },
+    { headers: CORS_HEADERS }
   );
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const mcpKey = searchParams.get("key");
+    const body = await req.json();
+
+    if (Array.isArray(body)) {
+      const results = [];
+      for (const item of body) {
+        const res = await handleJsonRpcMessage(item, req.url, mcpKey);
+        if (res) results.push(res);
+      }
+      if (results.length === 0) {
+        return new NextResponse(null, { status: 202, headers: CORS_HEADERS });
+      }
+      return NextResponse.json(results, { headers: CORS_HEADERS });
+    }
+
+    const response = await handleJsonRpcMessage(body, req.url, mcpKey);
+    if (!response) {
+      return new NextResponse(null, { status: 202, headers: CORS_HEADERS });
+    }
+    return NextResponse.json(response, { headers: CORS_HEADERS });
+  } catch (err: any) {
+    return NextResponse.json(
+      {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: err.message || "Parse error" },
+      },
+      { status: 400, headers: CORS_HEADERS }
+    );
+  }
+}
+
+export async function DELETE() {
+  return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
 }
 `
 );
 
-// 7. app/page.tsx (Clean Header, Option B Read-Only Guest Mode, Admin Settings Modal with Hidden Reset/Seed/MCP URL)
+// 6. app/page.tsx (With 4th "Insights" Tab: Cash vs Paper Profit, Customer Buying Matrix & Deadstock Clearance Plan)
 write(
   "app/page.tsx",
   `"use client";
@@ -1048,7 +1404,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 export default function HomePage() {
-  const [tab, setTab] = useState<"inbox" | "parties" | "stock">("inbox");
+  const [tab, setTab] = useState<"inbox" | "parties" | "stock" | "insights">("inbox");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1229,9 +1585,20 @@ export default function HomePage() {
     total_payables: 0,
     total_receivables: 0,
     total_stock_value: 0,
+    active_stock_value: 0,
     total_profit: 0,
+    cash_realized_profit: 0,
+    uncollected_profit: 0,
     deadstock_value: 0,
+    coverage_ratio: 0,
   };
+
+  const customerParties = parties
+    .filter((p: any) => p.type === "customer")
+    .sort((a: any, b: any) => b.total_profit - a.total_profit);
+  const deadOrSlowStock = stock.filter(
+    (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
@@ -1251,7 +1618,6 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Right Side: Admin Controls vs Guest Read-Only Sign In */}
           {isAdmin ? (
             <div className="flex items-center gap-1.5">
               <button
@@ -1327,7 +1693,7 @@ export default function HomePage() {
             </p>
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
-            <p className="text-[10px] text-slate-400">Net Profit</p>
+            <p className="text-[10px] text-slate-400">Booked Profit</p>
             <p className="text-xs font-extrabold text-emerald-400 mt-0.5">
               +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
             </p>
@@ -1361,7 +1727,7 @@ export default function HomePage() {
                     setForm({
                       ...form,
                       type: t,
-                      party_name: t === "sale" ? "Kiran" : "Shah Textiles",
+                      party_name: t === "sale" ? "Kiran Boutique" : "Shah Textiles",
                       rate: t === "sale" ? "450" : "300",
                       qty: t === "sale" ? "10" : "200",
                       paid_amount:
@@ -1744,7 +2110,7 @@ export default function HomePage() {
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Exact Profit</span>
+                        <span className="text-slate-400 block">Booked Profit</span>
                         <span className="font-bold text-emerald-400">
                           +₹{Number(c.profit).toLocaleString("en-IN")}
                         </span>
@@ -1752,7 +2118,13 @@ export default function HomePage() {
                     </div>
                   )}
 
-                  <div className="pt-1 flex justify-end">
+                  <div className="pt-1 flex justify-between items-center text-[11px] text-slate-500">
+                    <span>
+                      {new Date(c.date).toLocaleDateString("en-IN", {
+                        day: "numeric",
+                        month: "short",
+                      })}
+                    </span>
                     <button
                       onClick={() => setInvoiceEntry(c)}
                       className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-lg font-medium cursor-pointer"
@@ -1766,11 +2138,11 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 2: PARTIES, CUSTOMER TRENDS & LIVE STATEMENT LINKS */}
+        {/* TAB 2: PARTIES & LIVE STATEMENT LINKS */}
         {!loading && tab === "parties" && (
           <div className="space-y-3">
             <h2 className="text-sm font-bold text-slate-200">
-              Vendor Credits & Customer Trends ({parties.length})
+              Vendor Credits & Customer Balances ({parties.length})
             </h2>
             {parties.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
@@ -1807,6 +2179,19 @@ export default function HomePage() {
                         >
                           {p.type}
                         </span>
+                        {!isVendor && p.customer_tier !== "New" && (
+                          <span
+                            className={\`text-[10px] font-bold px-2 py-0.5 rounded \${
+                              p.customer_tier === "VIP Cash Buyer"
+                                ? "bg-emerald-500/15 text-emerald-300"
+                                : p.customer_tier === "High-Margin Credit"
+                                ? "bg-amber-500/15 text-amber-300"
+                                : "bg-rose-500/15 text-rose-300"
+                            }\`}
+                          >
+                            {p.customer_tier}
+                          </span>
+                        )}
                         {ack?.status === "verified" && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                             ✓ Verified by {p.name}
@@ -1851,21 +2236,26 @@ export default function HomePage() {
                   {!isVendor ? (
                     <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                       <div>
-                        <span className="text-slate-400 block">Profit Generated</span>
+                        <span className="text-slate-400 block">Booked Profit</span>
                         <span className="font-bold text-emerald-400">
                           +₹{Number(p.total_profit).toLocaleString("en-IN")} ({p.profit_margin_pct}%)
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Payment Ratio</span>
-                        <span className="font-bold text-slate-200">
-                          {p.payment_ratio_pct}% Paid
+                        <span className="text-slate-400 block">Cash Profit</span>
+                        <span
+                          className={\`font-bold \${
+                            p.cash_realized_profit >= 0 ? "text-emerald-300" : "text-amber-300"
+                          }\`}
+                        >
+                          {p.cash_realized_profit >= 0 ? "+" : ""}₹
+                          {Number(p.cash_realized_profit).toLocaleString("en-IN")}
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Buying Trend</span>
-                        <span className="font-bold text-sky-300 capitalize">
-                          {p.order_count}x • {p.favorite_item || "Cloth"}
+                        <span className="text-slate-400 block">Avg Rate Paid</span>
+                        <span className="font-bold text-sky-300">
+                          ₹{p.avg_rate_paid}/m ({p.payment_ratio_pct}% paid)
                         </span>
                       </div>
                     </div>
@@ -1913,16 +2303,16 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 3: STOCK, WEIGHTED-AVERAGE COST & DEADSTOCK RADAR */}
+        {/* TAB 3: STOCK & WEIGHTED-AVERAGE COST */}
         {!loading && tab === "stock" && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-200">
-                Stock, Avg Cost & Deadstock Radar ({stock.length})
+                Stock, Avg Cost & Velocity ({stock.length})
               </h2>
               {kpis.deadstock_value > 0 && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
-                  At-Risk Capital: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
+                  At-Risk: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
                 </span>
               )}
             </div>
@@ -1950,16 +2340,16 @@ export default function HomePage() {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <h3 className="text-base font-bold capitalize">{s.name}</h3>
                         {isDead && (
                           <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                            🔴 DEADSTOCK (0% Sold)
+                            🔴 DEADSTOCK • {s.age_days}d Unsold
                           </span>
                         )}
                         {isSlow && (
                           <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
-                            🟡 SLOW MOVING ({s.sell_through_pct}% Sold)
+                            🟡 SLOW MOVING ({s.sell_through_pct}%)
                           </span>
                         )}
                         {s.stock_status === "FAST_MOVING" && (
@@ -1969,10 +2359,14 @@ export default function HomePage() {
                         )}
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit}
+                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit} •{" "}
+                        {s.locked_share_pct}% of shop capital
                       </p>
                       <p className="text-xs text-emerald-400 font-semibold mt-0.5">
                         Weighted-Avg Cost: ₹{s.avg_cost}/{s.unit}
+                        {s.avg_selling_rate > 0
+                          ? \` • Avg Sell Rate: ₹\${s.avg_selling_rate}/\${s.unit}\`
+                          : ""}
                       </p>
                     </div>
                     <div className="text-right">
@@ -1983,8 +2377,7 @@ export default function HomePage() {
                         </span>
                       </p>
                       <p className="text-[11px] text-slate-400">
-                        Capital Locked: ₹
-                        {Number(s.stock_value).toLocaleString("en-IN")}
+                        Locked: ₹{Number(s.stock_value).toLocaleString("en-IN")}
                       </p>
                     </div>
                   </div>
@@ -2014,6 +2407,229 @@ export default function HomePage() {
             })}
           </div>
         )}
+
+        {/* TAB 4: BUSINESS INSIGHTS (100% DETERMINISTIC CODE MATH) */}
+        {!loading && tab === "insights" && (
+          <div className="space-y-4">
+            {/* Section 1: Booked Profit vs Cash-Realized Profit & Working Capital */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-emerald-400">
+                  1. Cash vs. Paper Profit & Working Capital
+                </h2>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
+                  Udhaar Risk Check
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[11px] text-slate-400">Booked Profit (Paper)</p>
+                  <p className="text-lg font-extrabold text-emerald-400 mt-0.5">
+                    +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    Includes uncollected credit bills
+                  </p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[11px] text-slate-400">Cash-Realized Profit</p>
+                  <p
+                    className={\`text-lg font-extrabold mt-0.5 \${
+                      kpis.cash_realized_profit >= 0
+                        ? "text-emerald-300"
+                        : "text-amber-400"
+                    }\`}
+                  >
+                    {kpis.cash_realized_profit >= 0 ? "+" : ""}₹
+                    {Number(kpis.cash_realized_profit).toLocaleString("en-IN")}
+                  </p>
+                  <p className="text-[10px] text-amber-300/90 mt-0.5">
+                    ₹{Number(kpis.uncollected_profit).toLocaleString("en-IN")} stuck in customer dues
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between text-xs">
+                <div>
+                  <p className="font-semibold text-slate-200">
+                    Payables Coverage Ratio:{" "}
+                    <span className="text-emerald-400 font-extrabold">
+                      {kpis.coverage_ratio === 99 ? "∞" : \`\${kpis.coverage_ratio}x\`}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Liquid Assets (Receivables ₹
+                    {Number(kpis.total_receivables).toLocaleString("en-IN")} + Fast Stock ₹
+                    {Number(kpis.active_stock_value).toLocaleString("en-IN")}) vs Vendor Dues ₹
+                    {Number(kpis.total_payables).toLocaleString("en-IN")}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Customer Buying & Price Realization Matrix */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-sky-400">
+                  2. Customer Buying & Pricing Matrix
+                </h2>
+                <span className="text-[10px] text-slate-400">
+                  Volume vs. Margin/m
+                </span>
+              </div>
+
+              {customerParties.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  No customer sales confirmed yet. Tap &quot;Ravi (Admin) ⚙️ → Seed Sample Shop&quot; to test.
+                </p>
+              ) : (
+                <div className="space-y-2.5">
+                  {customerParties.map((c: any) => (
+                    <div
+                      key={c.id}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <h3 className="text-sm font-bold text-white">{c.name}</h3>
+                            <span
+                              className={\`text-[10px] font-bold px-2 py-0.5 rounded \${
+                                c.customer_tier === "VIP Cash Buyer"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : c.customer_tier === "High-Margin Credit"
+                                  ? "bg-amber-500/15 text-amber-300"
+                                  : "bg-rose-500/15 text-rose-300"
+                              }\`}
+                            >
+                              {c.customer_tier}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Buys:{" "}
+                            <strong className="text-slate-200 capitalize">
+                              {c.total_qty} m {c.favorite_item || "cloth"}
+                            </strong>{" "}
+                            • AOV: ₹{Number(c.aov).toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-extrabold text-sky-300">
+                            Pays ₹{c.avg_rate_paid}/m
+                          </span>
+                          <p className="text-[10px] text-slate-400">
+                            Margin: {c.profit_margin_pct}%
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 block">Booked Profit</span>
+                          <span className="font-bold text-emerald-400">
+                            +₹{Number(c.total_profit).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Cash Profit</span>
+                          <span
+                            className={\`font-bold \${
+                              c.cash_realized_profit >= 0
+                                ? "text-emerald-300"
+                                : "text-amber-300"
+                            }\`}
+                          >
+                            {c.cash_realized_profit >= 0 ? "+" : ""}₹
+                            {Number(c.cash_realized_profit).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Credit Risk</span>
+                          <span className="font-bold text-slate-200">
+                            {c.payment_ratio_pct}% Paid (Owes ₹
+                            {Number(c.balance).toLocaleString("en-IN")})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Section 3: Actionable Deadstock Liquidation Simulator */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-rose-400">
+                  3. Deadstock Liquidation & Capital Unlock
+                </h2>
+                <span className="text-[10px] text-slate-400">
+                  Break-Even Simulator
+                </span>
+              </div>
+
+              {deadOrSlowStock.length === 0 ? (
+                <p className="text-xs text-emerald-400">
+                  ✓ Zero deadstock! All cloth items have healthy sell-through velocity.
+                </p>
+              ) : (
+                <div className="space-y-2.5">
+                  {deadOrSlowStock.map((s: any) => (
+                    <div
+                      key={s.item_id}
+                      className="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <h3 className="text-sm font-bold capitalize text-white">
+                              {s.name}
+                            </h3>
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                              {s.age_days} Days Unsold
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            {s.stock_qty} {s.unit} sitting idle •{" "}
+                            <strong className="text-rose-300">
+                              {s.locked_share_pct}% of total inventory cash
+                            </strong>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-extrabold text-rose-400">
+                            ₹{Number(s.stock_value).toLocaleString("en-IN")}
+                          </p>
+                          <p className="text-[10px] text-slate-400">Locked Capital</p>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-[11px] space-y-1">
+                        <p className="text-slate-300">
+                          • <strong className="text-emerald-300">Break-Even Clearance:</strong>{" "}
+                          Sell at <strong>₹{s.clearance_breakeven_rate}/{s.unit}</strong> to recover{" "}
+                          <strong>₹{Number(s.stock_value).toLocaleString("en-IN")}</strong> (0% loss).
+                        </p>
+                        <p className="text-slate-400">
+                          • <strong className="text-amber-300">Fast 10% Markdown:</strong>{" "}
+                          Sell at <strong>₹{s.clearance_10pct_rate}/{s.unit}</strong> to immediately unlock{" "}
+                          <strong>
+                            ₹
+                            {Math.round(
+                              s.stock_qty * s.clearance_10pct_rate
+                            ).toLocaleString("en-IN")}
+                          </strong>{" "}
+                          cash to pay vendors.
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Admin Settings, Security & Hidden Demo Tools Modal */}
@@ -2038,7 +2654,6 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* Private MCP Connector Key (Visible only to Admin) */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-300 block">
                 Your Private Claude MCP Connector URL
@@ -2059,7 +2674,6 @@ export default function HomePage() {
               </p>
             </div>
 
-            {/* Role-Based Access Summary */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
               <p className="font-bold text-slate-200">
                 Security & Access Architecture
@@ -2072,7 +2686,6 @@ export default function HomePage() {
               </p>
             </div>
 
-            {/* Collapsible Developer / Demo Reset Drawer */}
             <div className="border-t border-slate-800 pt-3">
               <button
                 type="button"
@@ -2209,12 +2822,12 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar */}
+      {/* 4-Tab Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex justify-center">
-        <div className="w-full max-w-md grid grid-cols-3 py-2 px-4 gap-2">
+        <div className="w-full max-w-md grid grid-cols-4 py-2 px-3 gap-1.5">
           <button
             onClick={() => setTab("inbox")}
-            className={\`py-2.5 rounded-xl text-xs font-bold cursor-pointer \${
+            className={\`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer \${
               tab === "inbox"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
@@ -2224,7 +2837,7 @@ export default function HomePage() {
           </button>
           <button
             onClick={() => setTab("parties")}
-            className={\`py-2.5 rounded-xl text-xs font-bold cursor-pointer \${
+            className={\`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer \${
               tab === "parties"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
@@ -2234,13 +2847,23 @@ export default function HomePage() {
           </button>
           <button
             onClick={() => setTab("stock")}
-            className={\`py-2.5 rounded-xl text-xs font-bold cursor-pointer \${
+            className={\`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer \${
               tab === "stock"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
             }\`}
           >
             Stock ({stock.length})
+          </button>
+          <button
+            onClick={() => setTab("insights")}
+            className={\`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer \${
+              tab === "insights"
+                ? "bg-emerald-500 text-slate-950"
+                : "text-slate-400 hover:text-white"
+            }\`}
+          >
+            Insights 📊
           </button>
         </div>
       </nav>
@@ -2250,4 +2873,4 @@ export default function HomePage() {
 `
 );
 
-console.log("SECURITY, LOGIN SESSION & HIDDEN ADMIN TOOLS APPLIED!");
+console.log("INSIGHTS TAB & DETERMINISTIC ANALYTICS APPLIED!");

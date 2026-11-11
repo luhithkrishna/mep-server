@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 export default function HomePage() {
-  const [tab, setTab] = useState<"inbox" | "parties" | "stock">("inbox");
+  const [tab, setTab] = useState<"inbox" | "parties" | "stock" | "insights">("inbox");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -184,9 +184,20 @@ export default function HomePage() {
     total_payables: 0,
     total_receivables: 0,
     total_stock_value: 0,
+    active_stock_value: 0,
     total_profit: 0,
+    cash_realized_profit: 0,
+    uncollected_profit: 0,
     deadstock_value: 0,
+    coverage_ratio: 0,
   };
+
+  const customerParties = parties
+    .filter((p: any) => p.type === "customer")
+    .sort((a: any, b: any) => b.total_profit - a.total_profit);
+  const deadOrSlowStock = stock.filter(
+    (s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING"
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
@@ -206,7 +217,6 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Right Side: Admin Controls vs Guest Read-Only Sign In */}
           {isAdmin ? (
             <div className="flex items-center gap-1.5">
               <button
@@ -282,7 +292,7 @@ export default function HomePage() {
             </p>
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
-            <p className="text-[10px] text-slate-400">Net Profit</p>
+            <p className="text-[10px] text-slate-400">Booked Profit</p>
             <p className="text-xs font-extrabold text-emerald-400 mt-0.5">
               +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
             </p>
@@ -316,7 +326,7 @@ export default function HomePage() {
                     setForm({
                       ...form,
                       type: t,
-                      party_name: t === "sale" ? "Kiran" : "Shah Textiles",
+                      party_name: t === "sale" ? "Kiran Boutique" : "Shah Textiles",
                       rate: t === "sale" ? "450" : "300",
                       qty: t === "sale" ? "10" : "200",
                       paid_amount:
@@ -699,7 +709,7 @@ export default function HomePage() {
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Exact Profit</span>
+                        <span className="text-slate-400 block">Booked Profit</span>
                         <span className="font-bold text-emerald-400">
                           +₹{Number(c.profit).toLocaleString("en-IN")}
                         </span>
@@ -707,7 +717,13 @@ export default function HomePage() {
                     </div>
                   )}
 
-                  <div className="pt-1 flex justify-end">
+                  <div className="pt-1 flex justify-between items-center text-[11px] text-slate-500">
+                    <span>
+                      {new Date(c.date).toLocaleDateString("en-IN", {
+                        day: "numeric",
+                        month: "short",
+                      })}
+                    </span>
                     <button
                       onClick={() => setInvoiceEntry(c)}
                       className="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-lg font-medium cursor-pointer"
@@ -721,11 +737,11 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 2: PARTIES, CUSTOMER TRENDS & LIVE STATEMENT LINKS */}
+        {/* TAB 2: PARTIES & LIVE STATEMENT LINKS */}
         {!loading && tab === "parties" && (
           <div className="space-y-3">
             <h2 className="text-sm font-bold text-slate-200">
-              Vendor Credits & Customer Trends ({parties.length})
+              Vendor Credits & Customer Balances ({parties.length})
             </h2>
             {parties.length === 0 && (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-xs text-slate-400">
@@ -762,6 +778,19 @@ export default function HomePage() {
                         >
                           {p.type}
                         </span>
+                        {!isVendor && p.customer_tier !== "New" && (
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                              p.customer_tier === "VIP Cash Buyer"
+                                ? "bg-emerald-500/15 text-emerald-300"
+                                : p.customer_tier === "High-Margin Credit"
+                                ? "bg-amber-500/15 text-amber-300"
+                                : "bg-rose-500/15 text-rose-300"
+                            }`}
+                          >
+                            {p.customer_tier}
+                          </span>
+                        )}
                         {ack?.status === "verified" && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                             ✓ Verified by {p.name}
@@ -806,21 +835,26 @@ export default function HomePage() {
                   {!isVendor ? (
                     <div className="grid grid-cols-3 gap-2 text-[11px] bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                       <div>
-                        <span className="text-slate-400 block">Profit Generated</span>
+                        <span className="text-slate-400 block">Booked Profit</span>
                         <span className="font-bold text-emerald-400">
                           +₹{Number(p.total_profit).toLocaleString("en-IN")} ({p.profit_margin_pct}%)
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Payment Ratio</span>
-                        <span className="font-bold text-slate-200">
-                          {p.payment_ratio_pct}% Paid
+                        <span className="text-slate-400 block">Cash Profit</span>
+                        <span
+                          className={`font-bold ${
+                            p.cash_realized_profit >= 0 ? "text-emerald-300" : "text-amber-300"
+                          }`}
+                        >
+                          {p.cash_realized_profit >= 0 ? "+" : ""}₹
+                          {Number(p.cash_realized_profit).toLocaleString("en-IN")}
                         </span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block">Buying Trend</span>
-                        <span className="font-bold text-sky-300 capitalize">
-                          {p.order_count}x • {p.favorite_item || "Cloth"}
+                        <span className="text-slate-400 block">Avg Rate Paid</span>
+                        <span className="font-bold text-sky-300">
+                          ₹{p.avg_rate_paid}/m ({p.payment_ratio_pct}% paid)
                         </span>
                       </div>
                     </div>
@@ -868,16 +902,16 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 3: STOCK, WEIGHTED-AVERAGE COST & DEADSTOCK RADAR */}
+        {/* TAB 3: STOCK & WEIGHTED-AVERAGE COST */}
         {!loading && tab === "stock" && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-200">
-                Stock, Avg Cost & Deadstock Radar ({stock.length})
+                Stock, Avg Cost & Velocity ({stock.length})
               </h2>
               {kpis.deadstock_value > 0 && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
-                  At-Risk Capital: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
+                  At-Risk: ₹{Number(kpis.deadstock_value).toLocaleString("en-IN")}
                 </span>
               )}
             </div>
@@ -905,16 +939,16 @@ export default function HomePage() {
                 >
                   <div className="flex justify-between items-start">
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <h3 className="text-base font-bold capitalize">{s.name}</h3>
                         {isDead && (
                           <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                            🔴 DEADSTOCK (0% Sold)
+                            🔴 DEADSTOCK • {s.age_days}d Unsold
                           </span>
                         )}
                         {isSlow && (
                           <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
-                            🟡 SLOW MOVING ({s.sell_through_pct}% Sold)
+                            🟡 SLOW MOVING ({s.sell_through_pct}%)
                           </span>
                         )}
                         {s.stock_status === "FAST_MOVING" && (
@@ -924,10 +958,14 @@ export default function HomePage() {
                         )}
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit}
+                        In: {s.purchased_qty} {s.unit} • Sold: {s.sold_qty} {s.unit} •{" "}
+                        {s.locked_share_pct}% of shop capital
                       </p>
                       <p className="text-xs text-emerald-400 font-semibold mt-0.5">
                         Weighted-Avg Cost: ₹{s.avg_cost}/{s.unit}
+                        {s.avg_selling_rate > 0
+                          ? ` • Avg Sell Rate: ₹${s.avg_selling_rate}/${s.unit}`
+                          : ""}
                       </p>
                     </div>
                     <div className="text-right">
@@ -938,8 +976,7 @@ export default function HomePage() {
                         </span>
                       </p>
                       <p className="text-[11px] text-slate-400">
-                        Capital Locked: ₹
-                        {Number(s.stock_value).toLocaleString("en-IN")}
+                        Locked: ₹{Number(s.stock_value).toLocaleString("en-IN")}
                       </p>
                     </div>
                   </div>
@@ -969,6 +1006,229 @@ export default function HomePage() {
             })}
           </div>
         )}
+
+        {/* TAB 4: BUSINESS INSIGHTS (100% DETERMINISTIC CODE MATH) */}
+        {!loading && tab === "insights" && (
+          <div className="space-y-4">
+            {/* Section 1: Booked Profit vs Cash-Realized Profit & Working Capital */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-emerald-400">
+                  1. Cash vs. Paper Profit & Working Capital
+                </h2>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold">
+                  Udhaar Risk Check
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[11px] text-slate-400">Booked Profit (Paper)</p>
+                  <p className="text-lg font-extrabold text-emerald-400 mt-0.5">
+                    +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    Includes uncollected credit bills
+                  </p>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[11px] text-slate-400">Cash-Realized Profit</p>
+                  <p
+                    className={`text-lg font-extrabold mt-0.5 ${
+                      kpis.cash_realized_profit >= 0
+                        ? "text-emerald-300"
+                        : "text-amber-400"
+                    }`}
+                  >
+                    {kpis.cash_realized_profit >= 0 ? "+" : ""}₹
+                    {Number(kpis.cash_realized_profit).toLocaleString("en-IN")}
+                  </p>
+                  <p className="text-[10px] text-amber-300/90 mt-0.5">
+                    ₹{Number(kpis.uncollected_profit).toLocaleString("en-IN")} stuck in customer dues
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between text-xs">
+                <div>
+                  <p className="font-semibold text-slate-200">
+                    Payables Coverage Ratio:{" "}
+                    <span className="text-emerald-400 font-extrabold">
+                      {kpis.coverage_ratio === 99 ? "∞" : `${kpis.coverage_ratio}x`}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Liquid Assets (Receivables ₹
+                    {Number(kpis.total_receivables).toLocaleString("en-IN")} + Fast Stock ₹
+                    {Number(kpis.active_stock_value).toLocaleString("en-IN")}) vs Vendor Dues ₹
+                    {Number(kpis.total_payables).toLocaleString("en-IN")}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Customer Buying & Price Realization Matrix */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-sky-400">
+                  2. Customer Buying & Pricing Matrix
+                </h2>
+                <span className="text-[10px] text-slate-400">
+                  Volume vs. Margin/m
+                </span>
+              </div>
+
+              {customerParties.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  No customer sales confirmed yet. Tap &quot;Ravi (Admin) ⚙️ → Seed Sample Shop&quot; to test.
+                </p>
+              ) : (
+                <div className="space-y-2.5">
+                  {customerParties.map((c: any) => (
+                    <div
+                      key={c.id}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <h3 className="text-sm font-bold text-white">{c.name}</h3>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                c.customer_tier === "VIP Cash Buyer"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : c.customer_tier === "High-Margin Credit"
+                                  ? "bg-amber-500/15 text-amber-300"
+                                  : "bg-rose-500/15 text-rose-300"
+                              }`}
+                            >
+                              {c.customer_tier}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Buys:{" "}
+                            <strong className="text-slate-200 capitalize">
+                              {c.total_qty} m {c.favorite_item || "cloth"}
+                            </strong>{" "}
+                            • AOV: ₹{Number(c.aov).toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-extrabold text-sky-300">
+                            Pays ₹{c.avg_rate_paid}/m
+                          </span>
+                          <p className="text-[10px] text-slate-400">
+                            Margin: {c.profit_margin_pct}%
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 block">Booked Profit</span>
+                          <span className="font-bold text-emerald-400">
+                            +₹{Number(c.total_profit).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Cash Profit</span>
+                          <span
+                            className={`font-bold ${
+                              c.cash_realized_profit >= 0
+                                ? "text-emerald-300"
+                                : "text-amber-300"
+                            }`}
+                          >
+                            {c.cash_realized_profit >= 0 ? "+" : ""}₹
+                            {Number(c.cash_realized_profit).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Credit Risk</span>
+                          <span className="font-bold text-slate-200">
+                            {c.payment_ratio_pct}% Paid (Owes ₹
+                            {Number(c.balance).toLocaleString("en-IN")})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Section 3: Actionable Deadstock Liquidation Simulator */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-bold text-rose-400">
+                  3. Deadstock Liquidation & Capital Unlock
+                </h2>
+                <span className="text-[10px] text-slate-400">
+                  Break-Even Simulator
+                </span>
+              </div>
+
+              {deadOrSlowStock.length === 0 ? (
+                <p className="text-xs text-emerald-400">
+                  ✓ Zero deadstock! All cloth items have healthy sell-through velocity.
+                </p>
+              ) : (
+                <div className="space-y-2.5">
+                  {deadOrSlowStock.map((s: any) => (
+                    <div
+                      key={s.item_id}
+                      className="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <h3 className="text-sm font-bold capitalize text-white">
+                              {s.name}
+                            </h3>
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                              {s.age_days} Days Unsold
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            {s.stock_qty} {s.unit} sitting idle •{" "}
+                            <strong className="text-rose-300">
+                              {s.locked_share_pct}% of total inventory cash
+                            </strong>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-extrabold text-rose-400">
+                            ₹{Number(s.stock_value).toLocaleString("en-IN")}
+                          </p>
+                          <p className="text-[10px] text-slate-400">Locked Capital</p>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-[11px] space-y-1">
+                        <p className="text-slate-300">
+                          • <strong className="text-emerald-300">Break-Even Clearance:</strong>{" "}
+                          Sell at <strong>₹{s.clearance_breakeven_rate}/{s.unit}</strong> to recover{" "}
+                          <strong>₹{Number(s.stock_value).toLocaleString("en-IN")}</strong> (0% loss).
+                        </p>
+                        <p className="text-slate-400">
+                          • <strong className="text-amber-300">Fast 10% Markdown:</strong>{" "}
+                          Sell at <strong>₹{s.clearance_10pct_rate}/{s.unit}</strong> to immediately unlock{" "}
+                          <strong>
+                            ₹
+                            {Math.round(
+                              s.stock_qty * s.clearance_10pct_rate
+                            ).toLocaleString("en-IN")}
+                          </strong>{" "}
+                          cash to pay vendors.
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Admin Settings, Security & Hidden Demo Tools Modal */}
@@ -993,7 +1253,6 @@ export default function HomePage() {
               </button>
             </div>
 
-            {/* Private MCP Connector Key (Visible only to Admin) */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-300 block">
                 Your Private Claude MCP Connector URL
@@ -1014,7 +1273,6 @@ export default function HomePage() {
               </p>
             </div>
 
-            {/* Role-Based Access Summary */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1.5 text-[11px]">
               <p className="font-bold text-slate-200">
                 Security & Access Architecture
@@ -1027,7 +1285,6 @@ export default function HomePage() {
               </p>
             </div>
 
-            {/* Collapsible Developer / Demo Reset Drawer */}
             <div className="border-t border-slate-800 pt-3">
               <button
                 type="button"
@@ -1164,12 +1421,12 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Mobile Bottom Navigation Bar */}
+      {/* 4-Tab Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex justify-center">
-        <div className="w-full max-w-md grid grid-cols-3 py-2 px-4 gap-2">
+        <div className="w-full max-w-md grid grid-cols-4 py-2 px-3 gap-1.5">
           <button
             onClick={() => setTab("inbox")}
-            className={`py-2.5 rounded-xl text-xs font-bold cursor-pointer ${
+            className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
               tab === "inbox"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
@@ -1179,7 +1436,7 @@ export default function HomePage() {
           </button>
           <button
             onClick={() => setTab("parties")}
-            className={`py-2.5 rounded-xl text-xs font-bold cursor-pointer ${
+            className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
               tab === "parties"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
@@ -1189,13 +1446,23 @@ export default function HomePage() {
           </button>
           <button
             onClick={() => setTab("stock")}
-            className={`py-2.5 rounded-xl text-xs font-bold cursor-pointer ${
+            className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
               tab === "stock"
                 ? "bg-emerald-500 text-slate-950"
                 : "text-slate-400 hover:text-white"
             }`}
           >
             Stock ({stock.length})
+          </button>
+          <button
+            onClick={() => setTab("insights")}
+            className={`py-2.5 rounded-xl text-[11px] font-bold cursor-pointer ${
+              tab === "insights"
+                ? "bg-emerald-500 text-slate-950"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            Insights 📊
           </button>
         </div>
       </nav>

@@ -110,10 +110,18 @@ export async function computeLedgerState(shopId: string) {
       purchased_qty: number;
       purchase_cost: number;
       sold_qty: number;
+      sales_revenue: number;
       avg_cost: number;
+      avg_selling_rate: number;
       stock_qty: number;
       stock_value: number;
       sell_through_pct: number;
+      first_purchase_date: string | null;
+      last_sale_date: string | null;
+      age_days: number;
+      locked_share_pct: number;
+      clearance_breakeven_rate: number;
+      clearance_10pct_rate: number;
       stock_status: "DEADSTOCK" | "SLOW_MOVING" | "FAST_MOVING" | "OUT_OF_STOCK";
     }
   >();
@@ -126,10 +134,18 @@ export async function computeLedgerState(shopId: string) {
       purchased_qty: 0,
       purchase_cost: 0,
       sold_qty: 0,
+      sales_revenue: 0,
       avg_cost: 0,
+      avg_selling_rate: 0,
       stock_qty: 0,
       stock_value: 0,
       sell_through_pct: 0,
+      first_purchase_date: null,
+      last_sale_date: null,
+      age_days: 0,
+      locked_share_pct: 0,
+      clearance_breakeven_rate: 0,
+      clearance_10pct_rate: 0,
       stock_status: "DEADSTOCK",
     });
   }
@@ -146,29 +162,54 @@ export async function computeLedgerState(shopId: string) {
           const rate = Number(l.rate) || 0;
           st.purchased_qty += qty;
           st.purchase_cost += qty * rate;
+          if (!st.first_purchase_date || new Date(entry.date) < new Date(st.first_purchase_date)) {
+            st.first_purchase_date = entry.date;
+          }
         }
       }
     } else if (entry.type === "sale") {
       for (const l of eLines) {
         const st = stockMap.get(l.item_id);
         if (st) {
-          st.sold_qty += Number(l.qty) || 0;
+          const qty = Number(l.qty) || 0;
+          const rate = Number(l.rate) || 0;
+          st.sold_qty += qty;
+          st.sales_revenue += qty * rate;
+          if (!st.last_sale_date || new Date(entry.date) > new Date(st.last_sale_date)) {
+            st.last_sale_date = entry.date;
+          }
         }
       }
     }
   }
 
+  let totalShopStockValue = 0;
   for (const st of stockMap.values()) {
     st.avg_cost =
       st.purchased_qty > 0
         ? Number((st.purchase_cost / st.purchased_qty).toFixed(2))
         : 0;
+    st.avg_selling_rate =
+      st.sold_qty > 0
+        ? Number((st.sales_revenue / st.sold_qty).toFixed(2))
+        : 0;
     st.stock_qty = Number((st.purchased_qty - st.sold_qty).toFixed(2));
     st.stock_value = Number((Math.max(0, st.stock_qty) * st.avg_cost).toFixed(2));
+    totalShopStockValue += st.stock_value;
+
     st.sell_through_pct =
       st.purchased_qty > 0
         ? Number(Math.min(100, (st.sold_qty / st.purchased_qty) * 100).toFixed(1))
         : 0;
+
+    const refDate = st.last_sale_date || st.first_purchase_date;
+    if (refDate) {
+      const diff = Date.now() - new Date(refDate).getTime();
+      st.age_days = Math.max(1, Math.round(diff / 86400000));
+    }
+
+    st.clearance_breakeven_rate = st.avg_cost;
+    st.clearance_10pct_rate = Number((st.avg_cost * 0.9).toFixed(0));
 
     if (st.stock_qty <= 0 && st.purchased_qty > 0) {
       st.stock_status = "OUT_OF_STOCK";
@@ -179,6 +220,13 @@ export async function computeLedgerState(shopId: string) {
     } else {
       st.stock_status = "FAST_MOVING";
     }
+  }
+
+  for (const st of stockMap.values()) {
+    st.locked_share_pct =
+      totalShopStockValue > 0
+        ? Number(((st.stock_value / totalShopStockValue) * 100).toFixed(1))
+        : 0;
   }
 
   const enrichedEntries = (entries || []).map((entry: any) => {
@@ -233,6 +281,8 @@ export async function computeLedgerState(shopId: string) {
     let totalBilled = 0;
     let totalPaid = 0;
     let totalProfit = 0;
+    let totalCost = 0;
+    let totalQty = 0;
     let orderCount = 0;
     const itemCounts: Record<string, number> = {};
 
@@ -240,9 +290,11 @@ export async function computeLedgerState(shopId: string) {
       if (e.type === "purchase" || e.type === "sale") {
         totalBilled += e.total_amount;
         totalPaid += e.paid_amount;
+        totalQty += Number(e.qty || 0);
         orderCount += 1;
         if (e.type === "sale") {
           totalProfit += e.profit;
+          totalCost += e.cost;
         }
         if (e.item?.name) {
           itemCounts[e.item.name] = (itemCounts[e.item.name] || 0) + Number(e.qty || 0);
@@ -259,6 +311,21 @@ export async function computeLedgerState(shopId: string) {
       totalBilled > 0 ? Math.min(100, Math.round((totalPaid / totalBilled) * 100)) : 100;
     const profitMarginPct =
       totalBilled > 0 ? Number(((totalProfit / totalBilled) * 100).toFixed(1)) : 0;
+    const aov = orderCount > 0 ? Math.round(totalBilled / orderCount) : 0;
+    const avgRatePaid = totalQty > 0 ? Math.round(totalBilled / totalQty) : 0;
+    const cashRealizedProfit =
+      party.type === "customer" ? Number((totalPaid - totalCost).toFixed(2)) : 0;
+
+    let customerTier: "VIP Cash Buyer" | "High-Margin Credit" | "Credit Risk" | "New" = "New";
+    if (party.type === "customer" && orderCount > 0) {
+      if (paymentRatioPct >= 75) {
+        customerTier = "VIP Cash Buyer";
+      } else if (paymentRatioPct >= 40 && profitMarginPct >= 20) {
+        customerTier = "High-Margin Credit";
+      } else {
+        customerTier = "Credit Risk";
+      }
+    }
 
     const ack = partyAcks.get(party.statement_token) || null;
 
@@ -266,12 +333,18 @@ export async function computeLedgerState(shopId: string) {
       ...party,
       total_billed: Number(totalBilled.toFixed(2)),
       total_paid: Number(totalPaid.toFixed(2)),
+      total_cost: Number(totalCost.toFixed(2)),
       balance,
       order_count: orderCount,
+      total_qty: totalQty,
+      aov,
+      avg_rate_paid: avgRatePaid,
       total_profit: Number(totalProfit.toFixed(2)),
+      cash_realized_profit: cashRealizedProfit,
       profit_margin_pct: profitMarginPct,
       payment_ratio_pct: paymentRatioPct,
       favorite_item: topItem,
+      customer_tier: customerTier,
       ack,
       entries: pEntries,
     };
@@ -282,20 +355,42 @@ export async function computeLedgerState(shopId: string) {
     .filter((e: any) => e.status === "confirmed")
     .reverse();
 
+  const totalPayables = partyBalances
+    .filter((p: any) => p.type === "vendor" && p.balance > 0)
+    .reduce((acc: number, p: any) => acc + p.balance, 0);
+
+  const totalReceivables = partyBalances
+    .filter((p: any) => p.type === "customer" && p.balance > 0)
+    .reduce((acc: number, p: any) => acc + p.balance, 0);
+
+  const totalBookedProfit = confirmedList
+    .filter((e: any) => e.type === "sale")
+    .reduce((acc: number, e: any) => acc + e.profit, 0);
+
+  const totalCashRealizedProfit = partyBalances
+    .filter((p: any) => p.type === "customer")
+    .reduce((acc: number, p: any) => acc + p.cash_realized_profit, 0);
+
+  const deadstockValue = stockList
+    .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
+    .reduce((acc: number, s: any) => acc + s.stock_value, 0);
+
+  const activeStockValue = Math.max(0, totalShopStockValue - deadstockValue);
+  const coverageRatio =
+    totalPayables > 0
+      ? Number(((totalReceivables + activeStockValue) / totalPayables).toFixed(2))
+      : 99;
+
   const kpis = {
-    total_payables: partyBalances
-      .filter((p: any) => p.type === "vendor" && p.balance > 0)
-      .reduce((acc: number, p: any) => acc + p.balance, 0),
-    total_receivables: partyBalances
-      .filter((p: any) => p.type === "customer" && p.balance > 0)
-      .reduce((acc: number, p: any) => acc + p.balance, 0),
-    total_stock_value: stockList.reduce((acc: number, s: any) => acc + s.stock_value, 0),
-    total_profit: confirmedList
-      .filter((e: any) => e.type === "sale")
-      .reduce((acc: number, e: any) => acc + e.profit, 0),
-    deadstock_value: stockList
-      .filter((s: any) => s.stock_status === "DEADSTOCK" || s.stock_status === "SLOW_MOVING")
-      .reduce((acc: number, s: any) => acc + s.stock_value, 0),
+    total_payables: totalPayables,
+    total_receivables: totalReceivables,
+    total_stock_value: totalShopStockValue,
+    active_stock_value: activeStockValue,
+    total_profit: totalBookedProfit,
+    cash_realized_profit: totalCashRealizedProfit,
+    uncollected_profit: Number((totalBookedProfit - totalCashRealizedProfit).toFixed(2)),
+    deadstock_value: deadstockValue,
+    coverage_ratio: coverageRatio,
   };
 
   return {
