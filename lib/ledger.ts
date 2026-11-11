@@ -81,7 +81,6 @@ export async function computeLedgerState(shopId: string) {
       stock_qty: 0,
       stock_value: 0,
       sell_through_pct: 0,
-      age_days: 1,
       stock_status: "DEADSTOCK",
     });
   }

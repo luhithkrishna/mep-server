@@ -12,10 +12,8 @@ export default function HomePage() {
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [showDevTools, setShowDevTools] = useState(false);
   const [copiedMcp, setCopiedMcp] = useState(false);
-  const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [invoiceEntry, setInvoiceEntry] = useState<any>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
-  const [localAcks, setLocalAcks] = useState<Record<string, any>>({});
 
   const [formType, setFormType] = useState<"purchase" | "sale" | "payment">("purchase");
   const [partyName, setPartyName] = useState("Sai Ram Textile");

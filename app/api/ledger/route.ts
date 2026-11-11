@@ -80,11 +80,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "create_draft") {
-      const { type, party_name, items, bill_no, paid_amount, due_days, days_ago, payment_method } = body;
+      const { type, party_name, items, item_name, qty, rate, bill_no, paid_amount, due_days, payment_method } = body;
       const defaultPartyType = type === "sale" ? "customer" : "vendor";
       const party = await getOrCreateParty(shop.id, party_name, defaultPartyType);
-      const entryDate = days_ago ? new Date(Date.now() - days_ago * 86400000).toISOString() : new Date().toISOString();
-      const dueDate = due_days ? new Date(new Date(entryDate).getTime() + due_days * 86400000).toISOString() : null;
+      const entryDate = new Date().toISOString();
+      const dueDate = due_days ? new Date(Date.now() + due_days * 86400000).toISOString() : null;
 
       const { data: entry, error } = await sb.from("entries").insert({
         shop_id: shop.id, type, party_id: party.id, bill_no: bill_no || null,
@@ -94,14 +94,15 @@ export async function POST(req: NextRequest) {
 
       if (error) throw new Error(error.message);
 
-      if (items && Array.isArray(items)) {
-        for (const it of items) {
-          const itemRec = await getOrCreateItem(shop.id, it.item_name || "cloth", it.unit || "m");
-          await sb.from("entry_lines").insert({
-            entry_id: entry.id, item_id: itemRec.id,
-            qty: Number(it.qty) || 1, rate: Number(it.rate) || 0,
-          });
-        }
+      // Handle both array of items and fallback single item
+      const parsedItems = items && Array.isArray(items) && items.length > 0 ? items : [{ item_name: item_name || "cloth", qty: qty || 1, rate: rate || 0, unit: "pcs" }];
+
+      for (const it of parsedItems) {
+        const itemRec = await getOrCreateItem(shop.id, it.item_name || "cloth", it.unit || "pcs");
+        await sb.from("entry_lines").insert({
+          entry_id: entry.id, item_id: itemRec.id,
+          qty: Number(it.qty) || 1, rate: Number(it.rate) || 0,
+        });
       }
 
       const state = await computeLedgerState(shop.id);

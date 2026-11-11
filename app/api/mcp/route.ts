@@ -10,60 +10,42 @@ const CORS_HEADERS = {
 const TOOLS = [
   {
     name: "create_purchase",
-    description: "Record a vendor purchase bill with multiple items and partial payment.",
+    description: "Record a vendor purchase bill with item name, quantity, rate, and upfront payment.",
     inputSchema: {
       type: "object",
       properties: {
-        party_name: { type: "string" },
-        items: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              item_name: { type: "string" },
-              qty: { type: "number" },
-              unit: { type: "string" },
-              rate: { type: "number" }
-            },
-            required: ["item_name", "qty", "rate"]
-          }
-        },
+        party_name: { type: "string", description: "Vendor name e.g. 'Sai Ram Textile'" },
+        item_name: { type: "string", description: "Item name e.g. 'sarees'" },
+        qty: { type: "number", description: "Quantity" },
+        unit: { type: "string", description: "'pcs' or 'm'" },
+        rate: { type: "number", description: "Rate per unit in INR" },
+        paid_amount: { type: "number", description: "Amount paid upfront in INR" },
         bill_no: { type: "string" },
-        paid_amount: { type: "number" },
         due_days: { type: "number" }
       },
-      required: ["party_name", "items"]
+      required: ["party_name", "item_name", "qty", "rate"]
     }
   },
   {
     name: "create_sale",
-    description: "Record a customer sale with multiple items and partial payment.",
+    description: "Record a customer sale.",
     inputSchema: {
       type: "object",
       properties: {
         party_name: { type: "string" },
-        items: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              item_name: { type: "string" },
-              qty: { type: "number" },
-              unit: { type: "string" },
-              rate: { type: "number" }
-            },
-            required: ["item_name", "qty", "rate"]
-          }
-        },
+        item_name: { type: "string" },
+        qty: { type: "number" },
+        unit: { type: "string" },
+        rate: { type: "number" },
         paid_amount: { type: "number" },
         due_days: { type: "number" }
       },
-      required: ["party_name", "items"]
+      required: ["party_name", "item_name", "qty", "rate"]
     }
   },
   {
     name: "create_payment",
-    description: "Record a payment made to a vendor or received from a customer.",
+    description: "Record a payment made to a vendor.",
     inputSchema: {
       type: "object",
       properties: { party_name: { type: "string" }, amount: { type: "number" }, method: { type: "string" } },
@@ -72,22 +54,22 @@ const TOOLS = [
   },
   {
     name: "get_stock",
-    description: "Get stock quantity and weighted-average cost.",
-    inputSchema: { type: "object", properties: { item_name: { type: "string" } } }
+    description: "Get stock quantities.",
+    inputSchema: { type: "object", properties: {} }
   },
   {
     name: "get_party_balance",
-    description: "Get vendor or customer balance.",
+    description: "Get party balance.",
     inputSchema: { type: "object", properties: { party_name: { type: "string" } }, required: ["party_name"] }
   },
   {
     name: "list_outstanding",
-    description: "List all outstanding balances.",
+    description: "List outstanding balances.",
     inputSchema: { type: "object", properties: {} }
   },
   {
     name: "get_business_insights",
-    description: "Analyze business profit and cash collection.",
+    description: "Get business insights.",
     inputSchema: { type: "object", properties: {} }
   }
 ];
@@ -97,36 +79,32 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
   const shop = await getShop(mcpKey);
 
   if (name === "create_purchase" || name === "create_sale") {
-    const { party_name, items = [], paid_amount = 0, due_days, bill_no } = args || {};
+    const { party_name, item_name, qty, rate, unit = "pcs", paid_amount = 0, due_days, bill_no } = args || {};
     const defaultType = name === "create_sale" ? "customer" : "vendor";
     const party = await getOrCreateParty(shop.id, party_name, defaultType);
-    const entryDate = new Date().toISOString();
-    const dueDate = due_days ? new Date(Date.now() + due_days * 86400000).toISOString() : null;
+    const itemRec = await getOrCreateItem(shop.id, item_name || "cloth", unit);
 
     const { data: entry, error } = await sb.from("entries").insert({
       shop_id: shop.id,
       type: name === "create_sale" ? "sale" : "purchase",
       party_id: party.id,
       bill_no: bill_no ? String(bill_no) : null,
-      date: entryDate,
-      due_date: dueDate,
+      date: new Date().toISOString(),
+      due_date: due_days ? new Date(Date.now() + due_days * 86400000).toISOString() : null,
       status: "draft",
       paid_amount: Number(paid_amount) || 0,
     }).select("*").single();
 
     if (error) throw new Error(error.message);
 
-    for (const it of items) {
-      const itemRec = await getOrCreateItem(shop.id, it.item_name || "cloth", it.unit || "m");
-      await sb.from("entry_lines").insert({
-        entry_id: entry.id,
-        item_id: itemRec.id,
-        qty: Number(it.qty) || 1,
-        rate: Number(it.rate) || 0,
-      });
-    }
+    await sb.from("entry_lines").insert({
+      entry_id: entry.id,
+      item_id: itemRec.id,
+      qty: Number(qty) || 1,
+      rate: Number(rate) || 0,
+    });
 
-    return `Draft multi-item saved in Inbox for ${party.name}.`;
+    return `Draft saved in Inbox for $.party.name}.`;
   }
 
   if (name === "create_payment") {
