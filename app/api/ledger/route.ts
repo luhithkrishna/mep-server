@@ -22,7 +22,11 @@ export async function GET(req: NextRequest) {
       if (!party) {
         return NextResponse.json({ error: "Statement not found" }, { status: 404 });
       }
-      const { data: shop } = await sb.from("shops").select("*").eq("id", party.shop_id).single();
+      const { data: shop } = await sb
+        .from("shops")
+        .select("*")
+        .eq("id", party.shop_id)
+        .single();
       const state = await computeLedgerState(party.shop_id);
       const partySummary = state.parties.find((p: any) => p.id === party.id);
       return NextResponse.json({ shop, party: partySummary });
@@ -72,8 +76,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, state });
     }
 
+    if (body.action === "reset_all") {
+      await sb.from("entries").delete().eq("shop_id", shop.id);
+      await sb.from("parties").delete().eq("shop_id", shop.id);
+      await sb.from("items").delete().eq("shop_id", shop.id);
+      const state = await computeLedgerState(shop.id);
+      return NextResponse.json({ ok: true, state });
+    }
+
     if (body.action === "create_draft") {
-      const { type, party_name, item_name, unit, qty, rate, bill_no, paid_amount, due_days, payment_method } = body;
+      const {
+        type,
+        party_name,
+        item_name,
+        unit,
+        qty,
+        rate,
+        bill_no,
+        paid_amount,
+        due_days,
+        payment_method,
+      } = body;
       const defaultPartyType = type === "sale" ? "customer" : "vendor";
       const party = await getOrCreateParty(shop.id, party_name, defaultPartyType);
 
@@ -99,7 +122,11 @@ export async function POST(req: NextRequest) {
       if (error) throw new Error(error.message);
 
       if (type === "purchase" || type === "sale") {
-        const item = await getOrCreateItem(shop.id, item_name || "white cotton", unit || "m");
+        const item = await getOrCreateItem(
+          shop.id,
+          item_name || "white cotton",
+          unit || "m"
+        );
         await sb.from("entry_lines").insert({
           entry_id: entry.id,
           item_id: item.id,

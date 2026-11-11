@@ -8,6 +8,8 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [copiedMcp, setCopiedMcp] = useState(false);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [form, setForm] = useState({
     type: "purchase",
@@ -56,10 +58,14 @@ export default function HomePage() {
       qty: current.qty !== undefined ? Number(current.qty) : entry.qty,
       rate: current.rate !== undefined ? Number(current.rate) : entry.rate,
       paid_amount:
-        current.paid_amount !== undefined ? Number(current.paid_amount) : entry.paid_amount,
+        current.paid_amount !== undefined
+          ? Number(current.paid_amount)
+          : entry.paid_amount,
       bill_no: current.bill_no !== undefined ? current.bill_no : entry.bill_no,
       payment_method:
-        current.payment_method !== undefined ? current.payment_method : entry.payment_method,
+        current.payment_method !== undefined
+          ? current.payment_method
+          : entry.payment_method,
       confirm,
     };
     const res = await fetch("/api/ledger", {
@@ -82,6 +88,18 @@ export default function HomePage() {
     setBusyId(null);
   }
 
+  async function handleResetAll() {
+    if (!confirm("Reset all demo bills, parties, and stock to start fresh?")) return;
+    setLoading(true);
+    const res = await fetch("/api/ledger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset_all" }),
+    }).then((r) => r.json());
+    if (res.state) setData((prev: any) => ({ ...prev, ...res.state }));
+    setLoading(false);
+  }
+
   async function handleQuickAdd(e: React.FormEvent) {
     e.preventDefault();
     await fetch("/api/ledger", {
@@ -93,41 +111,114 @@ export default function HomePage() {
     await loadData();
   }
 
+  function copyMcpUrl() {
+    const url = `${window.location.origin}/api/mcp?key=ravi123`;
+    navigator.clipboard.writeText(url);
+    setCopiedMcp(true);
+    setTimeout(() => setCopiedMcp(false), 2000);
+  }
+
+  function copyStatementUrl(token: string) {
+    const url = `${window.location.origin}/s/${token}`;
+    navigator.clipboard.writeText(url);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(null), 2000);
+  }
+
   const drafts = data?.drafts || [];
   const confirmed = data?.confirmed || [];
   const parties = data?.parties || [];
   const stock = data?.stock || [];
+  const kpis = data?.kpis || {
+    total_payables: 0,
+    total_receivables: 0,
+    total_stock_value: 0,
+    total_profit: 0,
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-white pb-24 flex flex-col items-center">
-      {/* Top Bar */}
-      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/90 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <h1 className="text-base font-bold tracking-tight">MCP Server</h1>
+      {/* Top Header */}
+      <header className="w-full max-w-md sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800 px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <h1 className="text-base font-bold tracking-tight">MCP Server</h1>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
+                No AI Inside
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Claude MCP Textile Ledger • Exact Code Math
+            </p>
           </div>
-          <p className="text-[11px] text-slate-400">
-            Claude MCP Textile Ledger • Exact Code Math
-          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowQuickAdd(!showQuickAdd)}
+              className="text-[11px] bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1.5 rounded-lg font-medium cursor-pointer"
+            >
+              + Draft
+            </button>
+            <button
+              onClick={handleResetAll}
+              className="text-[11px] bg-slate-900 hover:bg-rose-950 border border-slate-800 text-slate-400 hover:text-rose-300 px-2 py-1.5 rounded-lg cursor-pointer"
+              title="Clear all demo entries"
+            >
+              Reset
+            </button>
+            <Link
+              href="/login"
+              className="text-[11px] text-slate-400 hover:text-white px-1.5 py-1"
+            >
+              Login
+            </Link>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* 1-Click MCP Connector Bar for Reviewers */}
+        <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-[11px]">
+          <span className="text-slate-400 truncate mr-2">
+            MCP: <code className="text-emerald-400">/api/mcp?key=ravi123</code>
+          </span>
           <button
-            onClick={() => setShowQuickAdd(!showQuickAdd)}
-            className="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2.5 py-1.5 rounded-lg font-medium cursor-pointer"
+            onClick={copyMcpUrl}
+            className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-md font-semibold shrink-0 cursor-pointer"
           >
-            + Test Draft
+            {copiedMcp ? "✓ Copied!" : "Copy MCP URL"}
           </button>
-          <Link
-            href="/login"
-            className="text-xs text-slate-400 hover:text-white px-2 py-1"
-          >
-            Login
-          </Link>
         </div>
       </header>
 
-      <main className="w-full max-w-md px-4 pt-4 space-y-4">
+      <main className="w-full max-w-md px-4 pt-3 space-y-4">
+        {/* 4 Live Scoreboard KPI Cards */}
+        <div className="grid grid-cols-4 gap-2">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+            <p className="text-[10px] text-slate-400">You Owe</p>
+            <p className="text-xs font-extrabold text-amber-400 mt-0.5">
+              ₹{Number(kpis.total_payables).toLocaleString("en-IN")}
+            </p>
+          </div>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+            <p className="text-[10px] text-slate-400">Owed to You</p>
+            <p className="text-xs font-extrabold text-sky-400 mt-0.5">
+              ₹{Number(kpis.total_receivables).toLocaleString("en-IN")}
+            </p>
+          </div>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+            <p className="text-[10px] text-slate-400">Stock Value</p>
+            <p className="text-xs font-extrabold text-white mt-0.5">
+              ₹{Number(kpis.total_stock_value).toLocaleString("en-IN")}
+            </p>
+          </div>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+            <p className="text-[10px] text-slate-400">Net Profit</p>
+            <p className="text-xs font-extrabold text-emerald-400 mt-0.5">
+              +₹{Number(kpis.total_profit).toLocaleString("en-IN")}
+            </p>
+          </div>
+        </div>
+
         {/* Optional Quick Test Draft Creator */}
         {showQuickAdd && (
           <form
@@ -158,7 +249,8 @@ export default function HomePage() {
                       party_name: t === "sale" ? "Kiran" : "Shah Textiles",
                       rate: t === "sale" ? "450" : "300",
                       qty: t === "sale" ? "10" : "200",
-                      paid_amount: t === "sale" ? "2000" : t === "payment" ? "25000" : "0",
+                      paid_amount:
+                        t === "sale" ? "2000" : t === "payment" ? "25000" : "0",
                     })
                   }
                   className={`py-1.5 rounded-lg text-xs font-semibold uppercase border ${
@@ -206,7 +298,9 @@ export default function HomePage() {
               )}
               <input
                 type="number"
-                placeholder={form.type === "payment" ? "Payment Amount (₹)" : "Paid Now (₹)"}
+                placeholder={
+                  form.type === "payment" ? "Payment Amount (₹)" : "Paid Now (₹)"
+                }
                 value={form.paid_amount}
                 onChange={(e) => setForm({ ...form, paid_amount: e.target.value })}
                 className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs"
@@ -233,7 +327,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* TAB 1: INBOX (DRAFTS + CONFIRMED LEDGER) */}
+        {/* TAB 1: INBOX */}
         {!loading && tab === "inbox" && (
           <div className="space-y-5">
             <div className="space-y-3">
@@ -246,9 +340,11 @@ export default function HomePage() {
 
               {drafts.length === 0 && (
                 <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 text-center space-y-1">
-                  <p className="text-xs text-slate-300 font-medium">No unconfirmed drafts</p>
+                  <p className="text-xs text-slate-300 font-medium">
+                    No unconfirmed drafts
+                  </p>
                   <p className="text-[11px] text-slate-400">
-                    Tell Claude about a purchase, sale, or payment (or tap &quot;+ Test Draft&quot; above).
+                    Tell Claude about a purchase, sale, or payment to see it appear live here.
                   </p>
                 </div>
               )}
@@ -258,7 +354,9 @@ export default function HomePage() {
                 const editRate = Number(getEditVal(d, "rate")) || 0;
                 const editPaid = Number(getEditVal(d, "paid_amount")) || 0;
                 const liveTotal =
-                  d.type === "payment" ? editPaid : Number((editQty * editRate).toFixed(2));
+                  d.type === "payment"
+                    ? editPaid
+                    : Number((editQty * editRate).toFixed(2));
                 const liveUnpaid =
                   d.type === "payment" ? 0 : Number((liveTotal - editPaid).toFixed(2));
 
@@ -277,7 +375,9 @@ export default function HomePage() {
                         </h3>
                         {d.item && (
                           <p className="text-xs text-slate-400">
-                            Item: <span className="text-slate-200">{d.item.name}</span> ({d.item.unit})
+                            Item:{" "}
+                            <span className="text-slate-200">{d.item.name}</span> (
+                            {d.item.unit})
                           </p>
                         )}
                       </div>
@@ -294,7 +394,6 @@ export default function HomePage() {
                       </div>
                     </div>
 
-                    {/* Editable Fields ("Let a person change it") */}
                     {d.type !== "payment" ? (
                       <div className="grid grid-cols-2 gap-2.5 pt-1">
                         <div>
@@ -326,7 +425,9 @@ export default function HomePage() {
                           <input
                             type="number"
                             value={getEditVal(d, "paid_amount")}
-                            onChange={(e) => setEditVal(d.id, "paid_amount", e.target.value)}
+                            onChange={(e) =>
+                              setEditVal(d.id, "paid_amount", e.target.value)
+                            }
                             className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
@@ -351,7 +452,9 @@ export default function HomePage() {
                           <input
                             type="number"
                             value={getEditVal(d, "paid_amount")}
-                            onChange={(e) => setEditVal(d.id, "paid_amount", e.target.value)}
+                            onChange={(e) =>
+                              setEditVal(d.id, "paid_amount", e.target.value)
+                            }
                             className="w-full bg-slate-950 border border-amber-500/60 rounded-xl px-3 py-2 text-sm font-semibold"
                           />
                         </div>
@@ -362,7 +465,9 @@ export default function HomePage() {
                           <input
                             type="text"
                             value={getEditVal(d, "payment_method")}
-                            onChange={(e) => setEditVal(d.id, "payment_method", e.target.value)}
+                            onChange={(e) =>
+                              setEditVal(d.id, "payment_method", e.target.value)
+                            }
                             className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm"
                           />
                         </div>
@@ -375,7 +480,9 @@ export default function HomePage() {
                         onClick={() => saveOrConfirm(d, true)}
                         className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold py-3 rounded-xl text-sm transition cursor-pointer"
                       >
-                        {busyId === d.id ? "Posting..." : "✓ Confirm & Post to Ledger"}
+                        {busyId === d.id
+                          ? "Posting..."
+                          : "✓ Confirm & Post to Ledger"}
                       </button>
                       <button
                         disabled={busyId === d.id}
@@ -411,20 +518,31 @@ export default function HomePage() {
                         CONFIRMED {c.type}
                       </span>
                       {c.bill_no && (
-                        <span className="ml-2 text-xs text-slate-400">Bill #{c.bill_no}</span>
+                        <span className="ml-2 text-xs text-slate-400">
+                          Bill #{c.bill_no}
+                        </span>
                       )}
                       <h3 className="text-sm font-bold mt-1">{c.party?.name}</h3>
                     </div>
-                    <div className="text-right">
-                      <p className="text-base font-bold text-white">
-                        ₹{Number(c.total_amount).toLocaleString("en-IN")}
-                      </p>
-                      {c.type !== "payment" && (
-                        <p className="text-[11px] text-slate-400">
-                          Paid: ₹{Number(c.paid_amount).toLocaleString("en-IN")} • Due: ₹
-                          {Number(c.unpaid_amount).toLocaleString("en-IN")}
+                    <div className="text-right flex items-start gap-2">
+                      <div>
+                        <p className="text-base font-bold text-white">
+                          ₹{Number(c.total_amount).toLocaleString("en-IN")}
                         </p>
-                      )}
+                        {c.type !== "payment" && (
+                          <p className="text-[11px] text-slate-400">
+                            Paid: ₹{Number(c.paid_amount).toLocaleString("en-IN")} • Due: ₹
+                            {Number(c.unpaid_amount).toLocaleString("en-IN")}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => deleteEntry(c.id)}
+                        title="Delete entry"
+                        className="text-xs text-slate-500 hover:text-rose-400 px-1.5 py-0.5 rounded bg-slate-800/60 cursor-pointer"
+                      >
+                        ✕
+                      </button>
                     </div>
                   </div>
 
@@ -474,43 +592,69 @@ export default function HomePage() {
                 No parties yet. Confirm a purchase or sale first.
               </div>
             )}
-            {parties.map((p: any) => (
-              <div
-                key={p.id}
-                className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3"
-              >
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                      {p.type}
-                    </span>
-                    <h3 className="text-base font-bold mt-1">{p.name}</h3>
-                    <p className="text-xs text-slate-400">
-                      Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹
-                      {Number(p.total_paid).toLocaleString("en-IN")}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[11px] text-slate-400">
-                      {p.type === "vendor" ? "You Owe" : "Owes You"}
-                    </p>
-                    <p className="text-xl font-extrabold text-emerald-400">
-                      ₹{Number(p.balance).toLocaleString("en-IN")}
-                    </p>
-                  </div>
-                </div>
+            {parties.map((p: any) => {
+              const statementUrl =
+                typeof window !== "undefined"
+                  ? `${window.location.origin}/s/${p.statement_token}`
+                  : `/s/${p.statement_token}`;
+              const waText = encodeURIComponent(
+                `Hi ${p.name}, here is your live verified account statement with MCP Server (Balance: ₹${Number(
+                  p.balance
+                ).toLocaleString("en-IN")}): ${statementUrl}`
+              );
 
-                <div className="flex gap-2">
-                  <Link
-                    href={`/s/${p.statement_token}`}
-                    target="_blank"
-                    className="flex-1 text-center bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold py-2.5 rounded-xl text-xs"
-                  >
-                    Open Live Public Statement ↗
-                  </Link>
+              return (
+                <div
+                  key={p.id}
+                  className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3"
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {p.type}
+                      </span>
+                      <h3 className="text-base font-bold mt-1">{p.name}</h3>
+                      <p className="text-xs text-slate-400">
+                        Billed: ₹{Number(p.total_billed).toLocaleString("en-IN")} • Paid: ₹
+                        {Number(p.total_paid).toLocaleString("en-IN")}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[11px] text-slate-400">
+                        {p.type === "vendor" ? "You Owe" : "Owes You"}
+                      </p>
+                      <p className="text-xl font-extrabold text-emerald-400">
+                        ₹{Number(p.balance).toLocaleString("en-IN")}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <Link
+                      href={`/s/${p.statement_token}`}
+                      target="_blank"
+                      className="text-center bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold py-2 rounded-xl text-xs"
+                    >
+                      Open Live ↗
+                    </Link>
+                    <button
+                      onClick={() => copyStatementUrl(p.statement_token)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 rounded-xl text-xs cursor-pointer"
+                    >
+                      {copiedToken === p.statement_token ? "✓ Copied" : "Copy Link"}
+                    </button>
+                    <a
+                      href={`https://wa.me/?text=${waText}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-center bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-semibold py-2 rounded-xl text-xs"
+                    >
+                      WhatsApp
+                    </a>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -541,10 +685,16 @@ export default function HomePage() {
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-extrabold text-white">
-                    {s.stock_qty} <span className="text-sm font-normal text-slate-400">{s.unit}</span>
+                    {s.stock_qty}{" "}
+                    <span className="text-sm font-normal text-slate-400">
+                      {s.unit}
+                    </span>
                   </p>
                   <p className="text-[11px] text-slate-400">
-                    Value: ₹{Number((s.stock_qty * s.avg_cost).toFixed(0)).toLocaleString("en-IN")}
+                    Value: ₹
+                    {Number((s.stock_qty * s.avg_cost).toFixed(0)).toLocaleString(
+                      "en-IN"
+                    )}
                   </p>
                 </div>
               </div>

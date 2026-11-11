@@ -7,6 +7,7 @@ export default function PublicStatementPage() {
   const token = params?.token as string;
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [ackStatus, setAckStatus] = useState<"none" | "verified" | "disputed">("none");
 
   useEffect(() => {
     if (!token) return;
@@ -31,7 +32,9 @@ export default function PublicStatementPage() {
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full text-center">
           <h1 className="text-lg font-bold text-rose-400">Statement Not Found</h1>
-          <p className="text-xs text-slate-400 mt-2">This statement link is invalid or expired.</p>
+          <p className="text-xs text-slate-400 mt-2">
+            This statement link is invalid or has been reset.
+          </p>
         </div>
       </div>
     );
@@ -43,31 +46,82 @@ export default function PublicStatementPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-white py-6 px-4 flex justify-center">
       <div className="w-full max-w-md space-y-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
           <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 font-semibold">
-              Live Verified Statement
+            <span className="text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 font-bold">
+              ● Live Statement Link
             </span>
-            <span className="text-xs text-slate-400">No Login Required</span>
+            <button
+              onClick={() => window.print()}
+              className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded-lg text-slate-300 cursor-pointer"
+            >
+              Print / Save PDF
+            </button>
           </div>
+
           <h1 className="text-xl font-bold mt-3">{party.name}</h1>
           <p className="text-xs text-slate-400">
-            Account with <span className="text-slate-200 font-medium">{shop?.name || "MCP Server"}</span> ({party.type.toUpperCase()})
+            Ledger with{" "}
+            <span className="text-slate-200 font-semibold">
+              {shop?.name || "MCP Server"}
+            </span>{" "}
+            ({party.type.toUpperCase()}) • Works 24/7 with no login
           </p>
 
           <div className="mt-4 p-4 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center">
             <div>
               <p className="text-xs text-slate-400">
-                {isVendor ? "Net Balance Payable to You" : "Net Balance Receivable from You"}
+                {isVendor
+                  ? "Net Balance Payable to You"
+                  : "Net Balance Due from You"}
               </p>
               <p className="text-2xl font-extrabold text-emerald-400 mt-0.5">
                 ₹{Number(party.balance).toLocaleString("en-IN")}
               </p>
             </div>
             <div className="text-right text-xs text-slate-400 space-y-1">
-              <p>Total Billed: <span className="text-white font-semibold">₹{Number(party.total_billed).toLocaleString("en-IN")}</span></p>
-              <p>Total Paid: <span className="text-emerald-400 font-semibold">₹{Number(party.total_paid).toLocaleString("en-IN")}</span></p>
+              <p>
+                Total Billed:{" "}
+                <span className="text-white font-semibold">
+                  ₹{Number(party.total_billed).toLocaleString("en-IN")}
+                </span>
+              </p>
+              <p>
+                Total Paid:{" "}
+                <span className="text-emerald-400 font-semibold">
+                  ₹{Number(party.total_paid).toLocaleString("en-IN")}
+                </span>
+              </p>
             </div>
+          </div>
+
+          {/* Interactive Second-Person Confirmation */}
+          <div className="mt-4 pt-3 border-t border-slate-800">
+            {ackStatus === "none" ? (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setAckStatus("verified")}
+                  className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs cursor-pointer"
+                >
+                  ✓ Confirm Balance (₹{Number(party.balance).toLocaleString("en-IN")})
+                </button>
+                <button
+                  onClick={() => setAckStatus("disputed")}
+                  className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950 text-slate-300 hover:text-rose-300 text-xs font-semibold cursor-pointer"
+                >
+                  Flag Issue
+                </button>
+              </div>
+            ) : ackStatus === "verified" ? (
+              <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-center text-xs text-emerald-300 font-semibold">
+                ✓ Balance verified by {party.name} on{" "}
+                {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </div>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-center text-xs text-amber-300 font-semibold">
+                ⚠ Issue flagged for shop owner review.
+              </div>
+            )}
           </div>
         </div>
 
@@ -83,14 +137,19 @@ export default function PublicStatementPage() {
           )}
 
           {(party.entries || []).map((e: any) => (
-            <div key={e.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
+            <div
+              key={e.id}
+              className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2"
+            >
               <div className="flex justify-between items-start">
                 <div>
                   <span className="text-xs font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-200">
                     {e.type}
                   </span>
                   {e.bill_no && (
-                    <span className="ml-2 text-xs text-slate-400">Bill #{e.bill_no}</span>
+                    <span className="ml-2 text-xs text-slate-400">
+                      Bill #{e.bill_no}
+                    </span>
                   )}
                   <p className="text-xs text-slate-400 mt-1">
                     {new Date(e.date).toLocaleDateString("en-IN", {

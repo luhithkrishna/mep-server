@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 export function getSupabase() {
-  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/rest\/v1\/?$/, "");
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "")
+    .trim()
+    .replace(/\/rest\/v1\/?$/, "");
   const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
   return createClient(rawUrl, key, { auth: { persistSession: false } });
 }
@@ -23,7 +25,11 @@ export async function getShop(mcpKey?: string | null) {
   return created;
 }
 
-export async function getOrCreateParty(shopId: string, name: string, defaultType: "vendor" | "customer") {
+export async function getOrCreateParty(
+  shopId: string,
+  name: string,
+  defaultType: "vendor" | "customer"
+) {
   const sb = getSupabase();
   const cleanName = name.trim();
   const { data: existing } = await sb
@@ -88,10 +94,19 @@ export async function computeLedgerState(shopId: string) {
     linesByEntry.set(l.entry_id, arr);
   }
 
-  // 1. Compute Stock & Weighted-Average Cost from confirmed purchases
   const stockMap = new Map<
     string,
-    { item_id: string; name: string; unit: string; purchased_qty: number; purchase_cost: number; sold_qty: number; avg_cost: number; stock_qty: number }
+    {
+      item_id: string;
+      name: string;
+      unit: string;
+      purchased_qty: number;
+      purchase_cost: number;
+      sold_qty: number;
+      avg_cost: number;
+      stock_qty: number;
+      stock_value: number;
+    }
   >();
 
   for (const item of items || []) {
@@ -104,6 +119,7 @@ export async function computeLedgerState(shopId: string) {
       sold_qty: 0,
       avg_cost: 0,
       stock_qty: 0,
+      stock_value: 0,
     });
   }
 
@@ -132,19 +148,26 @@ export async function computeLedgerState(shopId: string) {
   }
 
   for (const st of stockMap.values()) {
-    st.avg_cost = st.purchased_qty > 0 ? Number((st.purchase_cost / st.purchased_qty).toFixed(2)) : 0;
+    st.avg_cost =
+      st.purchased_qty > 0
+        ? Number((st.purchase_cost / st.purchased_qty).toFixed(2))
+        : 0;
     st.stock_qty = Number((st.purchased_qty - st.sold_qty).toFixed(2));
+    st.stock_value = Number((st.stock_qty * st.avg_cost).toFixed(2));
   }
 
-  // 2. Enrich all entries with computed totals, cost, profit, and party info
   const enrichedEntries = (entries || []).map((entry: any) => {
     const eLines = linesByEntry.get(entry.id) || [];
     const firstLine = eLines[0] || null;
     const qty = firstLine ? Number(firstLine.qty) : 0;
     const rate = firstLine ? Number(firstLine.rate) : 0;
-    const lineTotal = eLines.reduce((acc: number, l: any) => acc + Number(l.qty) * Number(l.rate), 0);
+    const lineTotal = eLines.reduce(
+      (acc: number, l: any) => acc + Number(l.qty) * Number(l.rate),
+      0
+    );
     const paidAmount = Number(entry.paid_amount) || 0;
-    const totalAmount = entry.type === "payment" ? paidAmount : Number(lineTotal.toFixed(2));
+    const totalAmount =
+      entry.type === "payment" ? paidAmount : Number(lineTotal.toFixed(2));
 
     let cost = 0;
     let profit = 0;
@@ -154,11 +177,6 @@ export async function computeLedgerState(shopId: string) {
       cost = Number((qty * unitCost).toFixed(2));
       profit = Number((totalAmount - cost).toFixed(2));
     }
-
-    const balanceChange =
-      entry.type === "payment"
-        ? -paidAmount
-        : Number((totalAmount - paidAmount).toFixed(2));
 
     return {
       ...entry,
@@ -171,12 +189,11 @@ export async function computeLedgerState(shopId: string) {
       paid_amount: paidAmount,
       cost,
       profit,
-      unpaid_amount: entry.type === "payment" ? 0 : Number((totalAmount - paidAmount).toFixed(2)),
-      balance_change: balanceChange,
+      unpaid_amount:
+        entry.type === "payment" ? 0 : Number((totalAmount - paidAmount).toFixed(2)),
     };
   });
 
-  // 3. Compute Party Balances from confirmed entries
   const partyBalances = (parties || []).map((party: any) => {
     const pEntries = enrichedEntries.filter(
       (e: any) => e.party_id === party.id && e.status === "confirmed"
@@ -201,11 +218,28 @@ export async function computeLedgerState(shopId: string) {
     };
   });
 
+  const stockList = Array.from(stockMap.values());
+  const confirmedList = enrichedEntries.filter((e: any) => e.status === "confirmed").reverse();
+
+  const kpis = {
+    total_payables: partyBalances
+      .filter((p: any) => p.type === "vendor" && p.balance > 0)
+      .reduce((acc: number, p: any) => acc + p.balance, 0),
+    total_receivables: partyBalances
+      .filter((p: any) => p.type === "customer" && p.balance > 0)
+      .reduce((acc: number, p: any) => acc + p.balance, 0),
+    total_stock_value: stockList.reduce((acc: number, s: any) => acc + s.stock_value, 0),
+    total_profit: confirmedList
+      .filter((e: any) => e.type === "sale")
+      .reduce((acc: number, e: any) => acc + e.profit, 0),
+  };
+
   return {
-    stock: Array.from(stockMap.values()),
+    kpis,
+    stock: stockList,
     parties: partyBalances,
     entries: enrichedEntries.slice().reverse(),
     drafts: enrichedEntries.filter((e: any) => e.status === "draft").reverse(),
-    confirmed: enrichedEntries.filter((e: any) => e.status === "confirmed").reverse(),
+    confirmed: confirmedList,
   };
 }
