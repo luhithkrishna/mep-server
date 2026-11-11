@@ -1,45 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  getSupabase,
-  getShop,
-  getOrCreateParty,
-  getOrCreateItem,
-  computeLedgerState,
-} from "@/lib/ledger";
+import { getSupabase, getShop, getOrCreateParty, getOrCreateItem, computeLedgerState } from "@/lib/ledger";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, Mcp-Session-Id, Last-Event-Id",
 };
 
 const TOOLS = [
   {
     name: "create_purchase",
-    description: "Record a vendor purchase bill with multiple items (e.g. sarees, jeans, jackets) and partial upfront payment.",
+    description: "Record a vendor purchase bill with multiple items and partial payment.",
     inputSchema: {
       type: "object",
       properties: {
-        party_name: { type: "string", description: "Vendor name, e.g. 'Sai Ram Textile'" },
+        party_name: { type: "string" },
         items: {
           type: "array",
-          description: "List of items purchased",
           items: {
             type: "object",
             properties: {
-              item_name: { type: "string", description: "Name of item, e.g. 'sarees'" },
-              qty: { type: "number", description: "Quantity" },
-              unit: { type: "string", description: "'m' for meters or 'pcs' for pieces" },
-              rate: { type: "number", description: "Price per unit in INR" }
+              item_name: { type: "string" },
+              qty: { type: "number" },
+              unit: { type: "string" },
+              rate: { type: "number" }
             },
             required: ["item_name", "qty", "rate"]
           }
         },
         bill_no: { type: "string" },
-        paid_amount: { type: "number", description: "Amount paid upfront in INR" },
-        due_days: { type: "number" },
-        days_ago: { type: "number" }
+        paid_amount: { type: "number" },
+        due_days: { type: "number" }
       },
       required: ["party_name", "items"]
     }
@@ -65,8 +56,7 @@ const TOOLS = [
           }
         },
         paid_amount: { type: "number" },
-        due_days: { type: "number" },
-        days_ago: { type: "number" }
+        due_days: { type: "number" }
       },
       required: ["party_name", "items"]
     }
@@ -76,34 +66,30 @@ const TOOLS = [
     description: "Record a payment made to a vendor or received from a customer.",
     inputSchema: {
       type: "object",
-      properties: {
-        party_name: { type: "string" },
-        amount: { type: "number" },
-        method: { type: "string" }
-      },
+      properties: { party_name: { type: "string" }, amount: { type: "number" }, method: { type: "string" } },
       required: ["party_name", "amount"]
     }
   },
   {
     name: "get_stock",
-    description: "Get stock quantity, weighted-average cost, and deadstock status.",
-    inputSchema: { type: "object", properties: { item_name: { type: "string" } } },
+    description: "Get stock quantity and weighted-average cost.",
+    inputSchema: { type: "object", properties: { item_name: { type: "string" } } }
   },
   {
     name: "get_party_balance",
-    description: "Get vendor or customer balance and statement link.",
-    inputSchema: { type: "object", properties: { party_name: { type: "string" } }, required: ["party_name"] },
+    description: "Get vendor or customer balance.",
+    inputSchema: { type: "object", properties: { party_name: { type: "string" } }, required: ["party_name"] }
   },
   {
     name: "list_outstanding",
-    description: "List all vendors we owe and customers who owe us.",
-    inputSchema: { type: "object", properties: {} },
+    description: "List all outstanding balances.",
+    inputSchema: { type: "object", properties: {} }
   },
   {
     name: "get_business_insights",
-    description: "Analyze working capital, sales revenue, booked profit, cash collected vs pending udhaar, and deadstock.",
-    inputSchema: { type: "object", properties: {} },
-  },
+    description: "Analyze business profit and cash collection.",
+    inputSchema: { type: "object", properties: {} }
+  }
 ];
 
 async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: string | null) {
@@ -111,11 +97,11 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
   const shop = await getShop(mcpKey);
 
   if (name === "create_purchase" || name === "create_sale") {
-    const { party_name, items = [], paid_amount = 0, due_days, days_ago, bill_no } = args || {};
+    const { party_name, items = [], paid_amount = 0, due_days, bill_no } = args || {};
     const defaultType = name === "create_sale" ? "customer" : "vendor";
     const party = await getOrCreateParty(shop.id, party_name, defaultType);
-    const entryDate = days_ago ? new Date(Date.now() - days_ago * 86400000).toISOString() : new Date().toISOString();
-    const dueDate = due_days ? new Date(new Date(entryDate).getTime() + due_days * 86400000).toISOString() : null;
+    const entryDate = new Date().toISOString();
+    const dueDate = due_days ? new Date(Date.now() + due_days * 86400000).toISOString() : null;
 
     const { data: entry, error } = await sb.from("entries").insert({
       shop_id: shop.id,
@@ -140,7 +126,7 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
       });
     }
 
-    return `Draft multi-item ${name === "create_sale" ? "sale" : "purchase"} saved in Inbox for ${party.name}.`;
+    return `Draft multi-item saved in Inbox for ${party.name}.`;
   }
 
   if (name === "create_payment") {
@@ -156,25 +142,25 @@ async function executeTool(name: string, args: any, reqUrl: string, mcpKey?: str
 
   if (name === "get_stock") {
     const state = await computeLedgerState(shop.id);
-    return state.stock.map((s: any) => `• ${s.name}: ${s.stock_qty} ${s.unit} left (Avg Cost: ₹${s.avg_cost}/${s.unit}, Status: ${s.stock_status})`).join("\n");
+    return state.stock.map((s: any) => `• ${s.name}: ${s.stock_qty} ${s.unit} left (Avg Cost: ₹${s.avg_cost}/${s.unit})`).join("\n");
   }
 
   if (name === "get_party_balance") {
     const { party_name } = args || {};
     const state = await computeLedgerState(shop.id);
     const party = state.parties.find((p: any) => p.name.toLowerCase().includes(party_name.toLowerCase()));
-    if (!party) return `Party not found.`;
-    return `${party.name} (${party.type}): Balance ₹${party.balance} | Statement: ${new URL(reqUrl).origin}/s/${party.statement_token}`;
+    if (!party) return "Party not found.";
+    return `${party.name}: Balance ₹${party.balance} | Statement: ${new URL(reqUrl).origin}/s/${party.statement_token}`;
   }
 
   if (name === "list_outstanding") {
     const state = await computeLedgerState(shop.id);
-    return state.parties.filter((p: any) => p.balance !== 0).map((p: any) => `• ${p.name} (${p.type}): ₹${p.balance}`).join("\n");
+    return state.parties.filter((p: any) => p.balance !== 0).map((p: any) => `• ${p.name}: ₹${p.balance}`).join("\n");
   }
 
   if (name === "get_business_insights") {
     const state = await computeLedgerState(shop.id);
-    return `=== Business Insights ===\n• Total Sales Revenue: ₹${state.parties.filter((p: any) => p.type === "customer").reduce((a, c) => a + c.total_billed, 0)}\n• Total Booked Profit: +₹${state.kpis.total_profit}\n• Total Cash Collected: ₹${state.kpis.total_cash_collected}\n• Pending Customer Udhaar: ₹${state.kpis.total_receivables}`;
+    return `Total Profit: +₹${state.kpis.total_profit} | Cash Collected: ₹${state.kpis.total_cash_collected}`;
   }
 
   throw new Error(`Unknown tool: ${name}`);
